@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LoRA Search Console</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-title">LoRA Search Console</div>
+          <div class="brand-sub">Qdrant similarity + GPT OSS grounded answers</div>
+        </div>
+        <div class="status" id="status">Idle</div>
+      </header>
+
+      <main class="layout">
+        <section class="panel ask-panel">
+          <div class="panel-title">Ask a question</div>
+          <textarea
+            id="questionInput"
+            placeholder="Type your question here..."
+            rows="4"
+          ></textarea>
+          <div class="controls">
+            <label class="control">
+              <span>Top K</span>
+              <input id="topKInput" type="number" min="1" step="1" />
+            </label>
+            <label class="control">
+              <span>Threshold</span>
+              <div class="range-row">
+                <input id="thresholdRange" type="range" min="0" max="1" step="0.01" />
+                <input id="thresholdInput" type="number" min="0" max="1" step="0.01" />
+              </div>
+            </label>
+            <label class="control">
+              <span>LoRA model</span>
+              <select id="modelSelect"></select>
+            </label>
+            <label class="control">
+              <span>Qdrant collection</span>
+              <select id="collectionSelect"></select>
+            </label>
+          </div>
+          <div class="actions">
+            <button class="btn primary" id="askButton">Ask</button>
+            <button class="btn ghost" id="clearButton">Clear</button>
+          </div>
+          <div class="meta">
+            <div class="meta-item">
+              <span>Matches</span>
+              <strong id="matchCount">0</strong>
+            </div>
+            <div class="meta-item">
+              <span>Total time</span>
+              <strong id="totalTime">00:00</strong>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel answer-panel">
+          <div class="panel-title">Answer</div>
+          <div class="answer-header">
+            <div>
+              <div class="question-label">Question</div>
+              <div class="question-text" id="displayQuestion">No question yet.</div>
+            </div>
+            <div class="answer-meta">
+              <div id="answerModel">Model: -</div>
+              <button class="btn ghost" id="copyAnswer" disabled>Copy answer</button>
+            </div>
+          </div>
+          <div class="answer-section">
+            <div class="section-title">Initial answer</div>
+            <div class="section-meta">
+              <span id="initialTime">00:00</span>
+              <span id="initialModel">Model: -</span>
+            </div>
+            <div class="markdown answer-body" id="initialAnswerBody">
+              Ask a question to see a grounded answer.
+            </div>
+          </div>
+          <div class="feedback-panel" id="feedbackPanel">
+            <div class="section-title">Feedback</div>
+            <div class="panel-sub">
+              Share what is incorrect and/or what is missing. We will reframe the question and re-run search.
+            </div>
+            <div class="feedback-grid">
+              <label class="feedback-field">
+                <span>What is incorrect</span>
+                <textarea
+                  id="feedbackIncorrect"
+                  placeholder="Optional: call out incorrect statements or mismatched guidance..."
+                  rows="3"
+                ></textarea>
+              </label>
+              <label class="feedback-field">
+                <span>What is missing</span>
+                <textarea
+                  id="feedbackMissing"
+                  placeholder="Optional: describe missing steps, exceptions, or citations..."
+                  rows="3"
+                ></textarea>
+              </label>
+            </div>
+            <button class="btn primary" id="refineButton" disabled>Refine with feedback</button>
+            <div class="feedback-hint" id="feedbackHint"></div>
+          </div>
+          <div class="answer-section refined-section">
+            <div class="section-title">Refined answer</div>
+            <div class="reframed-question">
+              Reframed question: <span id="reframedQuestion">-</span>
+            </div>
+            <div class="section-meta">
+              <span id="refinedTime">00:00</span>
+              <span id="refinedModel">Model: -</span>
+            </div>
+            <div class="markdown answer-body" id="refinedAnswerBody">
+              Provide feedback to generate a refined answer.
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <section class="panel chunks-panel">
+        <div class="panel-header">
+          <div>
+            <div class="panel-title">Fetched chunks</div>
+            <div class="panel-sub">Inspect action points used for grounding.</div>
+          </div>
+          <div class="panel-actions">
+            <input id="chunkFilter" type="search" placeholder="Filter chunks" />
+            <select id="chunkSourceSelect">
+              <option value="initial">Initial</option>
+              <option value="refined" disabled>Refined</option>
+            </select>
+            <button class="btn ghost" id="toggleChunks">Hide chunks</button>
+          </div>
+        </div>
+        <div class="chunks-content" id="chunksContent">
+          <div class="list-viewport" id="chunkList"></div>
+          <div class="chunk-detail">
+            <div class="chunk-detail-title">Selected chunk</div>
+            <div class="chunk-detail-text" id="chunkDetailText">
+              Click a chunk to view full text.
+            </div>
+            <button class="btn ghost" id="copyChunk" disabled>Copy chunk</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel log-panel">
+        <div class="panel-header">
+          <div>
+            <div class="panel-title">Activity log</div>
+            <div class="panel-sub">Request flow and timing details.</div>
+          </div>
+          <div class="panel-actions">
+            <button class="btn ghost" id="clearLogs">Clear logs</button>
+          </div>
+        </div>
+        <div class="log-view" id="logView"></div>
+      </section>
+    </div>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>

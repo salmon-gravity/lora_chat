@@ -1,0 +1,13 @@
+{
+  "name": "lora-search-console",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LoRA Qdrant similarity search with GPT OSS grounding",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "nodemon": "^3.1.11"
+  }
+}

@@ -256,69 +256,74 @@ function mapMatches(results, threshold) {
 }
 
 async function askQdrantDense(question, topK, threshold, collection, modelName) {
-  if (!config.qdrantHost) {
-    throw new Error("Missing QDRANT_HOST.");
-  }
-  const vector = await embedQuestion(question, modelName);
-  const targetCollection = collection || config.qdrantCollection;
-  const url = buildQdrantUrl(`/collections/${targetCollection}/points/search`);
-  const payload = {
-    vector,
-    limit: topK,
-    with_payload: ["action_point", "action_id"],
-  };
-  const headers = config.qdrantApiKey ? { "api-key": config.qdrantApiKey } : {};
-  const response = await requestJson(url, "POST", payload, headers, 300000);
-  const results = normalizeQdrantResults(response);
-  return mapMatches(results, threshold);
-}
+  if (!config.qdrantHost) throw new Error("Missing QDRANT_HOST.");
 
-async function askQdrantHybrid(question, topK, threshold, collection, modelName) {
-  if (!config.qdrantHost) {
-    throw new Error("Missing QDRANT_HOST.");
-  }
   const vector = await embedQuestion(question, modelName);
   const targetCollection = collection || config.qdrantCollection;
   const url = buildQdrantUrl(`/collections/${targetCollection}/points/query`);
+
+  const payload = {
+    query: vector,
+    using: config.hybridDenseName,               // named dense vector
+    limit: topK,
+    with_payload: ["action_point", "action_id"],
+    with_vector: false,
+    score_threshold: threshold ?? undefined,     // Qdrant applies it correctly for cosine :contentReference[oaicite:7]{index=7}
+  };
+
+  const headers = config.qdrantApiKey ? { "api-key": config.qdrantApiKey } : {};
+  const response = await requestJson(url, "POST", payload, headers, 300000);
+
+  const results = normalizeQdrantResults(response);
+  return mapMatches(results, null); // already thresholded by Qdrant via score_threshold
+}
+
+
+async function askQdrantHybrid(question, topK, collection, modelName) {
+  if (!config.qdrantHost) throw new Error("Missing QDRANT_HOST.");
+
+  const vector = await embedQuestion(question, modelName);
+  const targetCollection = collection || config.qdrantCollection;
+  const url = buildQdrantUrl(`/collections/${targetCollection}/points/query`);
+
   const prefetchLimit = Math.max(topK, config.hybridPrefetchLimit || topK);
+
   const bm25Query = {
     text: question,
-    model: "Qdrant/bm25",
+    model: "qdrant/bm25",
     options: {
       avg_len: config.bm25AvgLen,
       k: config.bm25K,
       b: config.bm25B,
+      // keep language only if you are sure your Qdrant version supports it
       language: config.bm25Language,
     },
   };
+
   const payload = {
     prefetch: [
-      {
-        query: bm25Query,
-        using: config.hybridSparseName,
-        limit: prefetchLimit,
-      },
-      {
-        query: vector,
-        using: config.hybridDenseName,
-        limit: prefetchLimit,
-      },
+      { query: bm25Query, using: config.hybridSparseName, limit: prefetchLimit },
+      { query: vector, using: config.hybridDenseName, limit: prefetchLimit },
     ],
     query: { fusion: "rrf" },
     limit: topK,
     with_payload: ["action_point", "action_id"],
-    with_vectors: false,
+    with_vector: false,
   };
+
   const headers = config.qdrantApiKey ? { "api-key": config.qdrantApiKey } : {};
   const response = await requestJson(url, "POST", payload, headers, 300000);
+
   const results = normalizeQdrantResults(response);
-  return mapMatches(results, threshold);
+  // NOTE: hybrid fused score is not cosine; threshold filtering may be misleading
+  return mapMatches(results, null);
 }
+
 
 async function askQdrant(question, topK, threshold, collection, modelName, searchMode) {
   const mode = normalizeSearchMode(searchMode);
   if (mode === "hybrid") {
-    return askQdrantHybrid(question, topK, threshold, collection, modelName);
+    return askQdrantHybrid(question, topK, collection, modelName);
   }
   return askQdrantDense(question, topK, threshold, collection, modelName);
 }

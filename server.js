@@ -273,7 +273,7 @@ async function askQdrantDense(question, topK, threshold, collection, modelName) 
   return mapMatches(results, threshold);
 }
 
-async function askQdrantHybrid(question, topK, collection, modelName) {
+async function askQdrantHybrid(question, topK, threshold, collection, modelName) {
   if (!config.qdrantHost) {
     throw new Error("Missing QDRANT_HOST.");
   }
@@ -312,13 +312,13 @@ async function askQdrantHybrid(question, topK, collection, modelName) {
   const headers = config.qdrantApiKey ? { "api-key": config.qdrantApiKey } : {};
   const response = await requestJson(url, "POST", payload, headers, 300000);
   const results = normalizeQdrantResults(response);
-  return mapMatches(results, null);
+  return mapMatches(results, threshold);
 }
 
 async function askQdrant(question, topK, threshold, collection, modelName, searchMode) {
   const mode = normalizeSearchMode(searchMode);
   if (mode === "hybrid") {
-    return askQdrantHybrid(question, topK, collection, modelName);
+    return askQdrantHybrid(question, topK, threshold, collection, modelName);
   }
   return askQdrantDense(question, topK, threshold, collection, modelName);
 }

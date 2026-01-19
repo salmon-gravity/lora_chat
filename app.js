@@ -4,6 +4,7 @@ const elements = {
   topKInput: document.getElementById("topKInput"),
   thresholdRange: document.getElementById("thresholdRange"),
   thresholdInput: document.getElementById("thresholdInput"),
+  searchModeSelect: document.getElementById("searchModeSelect"),
   modelSelect: document.getElementById("modelSelect"),
   collectionSelect: document.getElementById("collectionSelect"),
   askButton: document.getElementById("askButton"),
@@ -37,6 +38,7 @@ const elements = {
 
 const DEFAULT_TOP_K = 300;
 const DEFAULT_THRESHOLD = 0.2;
+const DEFAULT_SEARCH_MODE = "dense";
 const ROW_HEIGHT = 86;
 
 const state = {
@@ -428,6 +430,7 @@ function setLoadingState(isLoading) {
   elements.topKInput.disabled = isLoading;
   elements.thresholdInput.disabled = isLoading;
   elements.thresholdRange.disabled = isLoading;
+  elements.searchModeSelect.disabled = isLoading;
   elements.modelSelect.disabled = isLoading;
   elements.collectionSelect.disabled = isLoading;
   updateRefineButtonState();
@@ -512,10 +515,12 @@ async function askQuestion() {
     0,
     Math.min(1, Number(elements.thresholdInput.value || DEFAULT_THRESHOLD))
   );
+  const searchMode = elements.searchModeSelect.value || DEFAULT_SEARCH_MODE;
   const model = elements.modelSelect.value;
   const collection = elements.collectionSelect.value;
   localStorage.setItem("topK", String(topK));
   localStorage.setItem("threshold", String(threshold));
+  localStorage.setItem("searchMode", searchMode);
   if (model) {
     localStorage.setItem("selectedModel", model);
   }
@@ -525,7 +530,7 @@ async function askQuestion() {
   setLoadingState(true);
   setStatus("Searching and generating answer...");
   addLog(
-    `Ask: model=${model || "-"} collection=${collection || "-"} topK=${topK} threshold=${threshold.toFixed(
+    `Ask: mode=${searchMode} model=${model || "-"} collection=${collection || "-"} topK=${topK} threshold=${threshold.toFixed(
       2
     )}`
   );
@@ -533,7 +538,14 @@ async function askQuestion() {
     const response = await fetch("/api/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, topK, threshold, model, collection }),
+      body: JSON.stringify({
+        question,
+        topK,
+        threshold,
+        model,
+        collection,
+        search_mode: searchMode,
+      }),
     });
     const payload = await response.json();
     if (!response.ok) {
@@ -578,12 +590,13 @@ async function refineQuestion() {
     0,
     Math.min(1, Number(elements.thresholdInput.value || DEFAULT_THRESHOLD))
   );
+  const searchMode = elements.searchModeSelect.value || DEFAULT_SEARCH_MODE;
   const model = elements.modelSelect.value;
   const collection = elements.collectionSelect.value;
   setLoadingState(true);
   setStatus("Reframing and searching...");
   addLog(
-    `Refine: model=${model || "-"} collection=${collection || "-"} topK=${topK} threshold=${threshold.toFixed(
+    `Refine: mode=${searchMode} model=${model || "-"} collection=${collection || "-"} topK=${topK} threshold=${threshold.toFixed(
       2
     )} incorrect=${feedbackIncorrect ? "yes" : "no"} missing=${feedbackMissing ? "yes" : "no"}`
   );
@@ -599,6 +612,7 @@ async function refineQuestion() {
         threshold,
         model,
         collection,
+        search_mode: searchMode,
       }),
     });
     const payload = await response.json();
@@ -639,8 +653,12 @@ function init() {
   const storedThreshold = Number(
     localStorage.getItem("threshold") || DEFAULT_THRESHOLD
   );
+  const storedSearchMode = localStorage.getItem("searchMode") || DEFAULT_SEARCH_MODE;
   elements.topKInput.value = storedTopK;
   syncThreshold(storedThreshold);
+  if (storedSearchMode) {
+    elements.searchModeSelect.value = storedSearchMode;
+  }
   elements.questionInput.value = "";
   elements.initialAnswerBody.innerHTML = "Ask a question to see a grounded answer.";
   elements.refinedAnswerBody.innerHTML = "Provide feedback to generate a refined answer.";
@@ -697,6 +715,10 @@ function init() {
   elements.thresholdInput.addEventListener("change", (event) =>
     syncThreshold(event.target.value)
   );
+  elements.searchModeSelect.addEventListener("change", () => {
+    const searchMode = elements.searchModeSelect.value || DEFAULT_SEARCH_MODE;
+    localStorage.setItem("searchMode", searchMode);
+  });
   elements.chunkSourceSelect.addEventListener("change", (event) => {
     state.chunkSource = event.target.value;
     updateChunkList();

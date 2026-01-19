@@ -42,6 +42,14 @@ const config = {
   qdrantCollection:
     process.env.LoRA_Embedding_QDRANT_COLLECTION ||
     "LoRA_epoch_11_75k_data_embeddings",
+  searchModeDefault: String(process.env.SEARCH_MODE || "dense").toLowerCase(),
+  hybridDenseName: process.env.QDRANT_DENSE_VECTOR_NAME || "dense",
+  hybridSparseName: process.env.QDRANT_SPARSE_VECTOR_NAME || "bm25",
+  hybridPrefetchLimit: Number(process.env.HYBRID_PREFETCH_LIMIT || 300),
+  bm25AvgLen: Number(process.env.BM25_AVG_LEN || 52),
+  bm25K: Number(process.env.BM25_K || 1.2),
+  bm25B: Number(process.env.BM25_B || 0.75),
+  bm25Language: process.env.BM25_LANGUAGE || "en",
   chatUrl: process.env.GPT_OSS_CHAT_URL || "http://ollama.gravity.ind.in:11434/api/chat",
   chatModel: process.env.GPT_OSS_MODEL || "gpt-oss:120b",
   chatSeed: Number(process.env.GPT_OSS_SEED || 101),
@@ -134,6 +142,32 @@ function buildQdrantUrl(pathname) {
   return `${scheme}://${config.qdrantHost}:${config.qdrantPort}${pathname}`;
 }
 
+function normalizeSearchMode(value) {
+  const cleaned = String(value || "").trim().toLowerCase();
+  if (cleaned === "dense+bm25" || cleaned === "bm25") {
+    return "hybrid";
+  }
+  if (cleaned === "dense" || cleaned === "hybrid") {
+    return cleaned;
+  }
+  const fallback = String(config.searchModeDefault || "dense").toLowerCase();
+  return fallback === "hybrid" ? "hybrid" : "dense";
+}
+
+function normalizeQdrantResults(response) {
+  if (!response) {
+    return [];
+  }
+  const result = response.result;
+  if (Array.isArray(result)) {
+    return result;
+  }
+  if (result && Array.isArray(result.points)) {
+    return result.points;
+  }
+  return [];
+}
+
 function listModelFolders() {
   if (!fs.existsSync(TRAINED_ROOT)) {
     return [];
@@ -200,7 +234,28 @@ function buildChatMessages(question, matches) {
   ];
 }
 
-async function askQdrant(question, topK, threshold, collection, modelName) {
+function mapMatches(results, threshold) {
+  return results
+    .map((item) => {
+      const payload = item.payload || {};
+      return {
+        score: Number(item.score || 0),
+        action_id: payload.action_id || null,
+        action_point: String(payload.action_point || "").trim(),
+      };
+    })
+    .filter((item) => {
+      if (!item.action_point) {
+        return false;
+      }
+      if (threshold === null) {
+        return true;
+      }
+      return item.score >= threshold;
+    });
+}
+
+async function askQdrantDense(question, topK, threshold, collection, modelName) {
   if (!config.qdrantHost) {
     throw new Error("Missing QDRANT_HOST.");
   }
@@ -214,18 +269,58 @@ async function askQdrant(question, topK, threshold, collection, modelName) {
   };
   const headers = config.qdrantApiKey ? { "api-key": config.qdrantApiKey } : {};
   const response = await requestJson(url, "POST", payload, headers, 300000);
-  const results = Array.isArray(response.result) ? response.result : [];
-  const matches = results
-    .map((item) => {
-      const payload = item.payload || {};
-      return {
-        score: Number(item.score || 0),
-        action_id: payload.action_id || null,
-        action_point: String(payload.action_point || "").trim(),
-      };
-    })
-    .filter((item) => item.action_point && item.score >= threshold);
-  return matches;
+  const results = normalizeQdrantResults(response);
+  return mapMatches(results, threshold);
+}
+
+async function askQdrantHybrid(question, topK, collection, modelName) {
+  if (!config.qdrantHost) {
+    throw new Error("Missing QDRANT_HOST.");
+  }
+  const vector = await embedQuestion(question, modelName);
+  const targetCollection = collection || config.qdrantCollection;
+  const url = buildQdrantUrl(`/collections/${targetCollection}/points/query`);
+  const prefetchLimit = Math.max(topK, config.hybridPrefetchLimit || topK);
+  const bm25Query = {
+    text: question,
+    model: "Qdrant/bm25",
+    options: {
+      avg_len: config.bm25AvgLen,
+      k: config.bm25K,
+      b: config.bm25B,
+      language: config.bm25Language,
+    },
+  };
+  const payload = {
+    prefetch: [
+      {
+        query: bm25Query,
+        using: config.hybridSparseName,
+        limit: prefetchLimit,
+      },
+      {
+        query: vector,
+        using: config.hybridDenseName,
+        limit: prefetchLimit,
+      },
+    ],
+    query: { fusion: "rrf" },
+    limit: topK,
+    with_payload: ["action_point", "action_id"],
+    with_vectors: false,
+  };
+  const headers = config.qdrantApiKey ? { "api-key": config.qdrantApiKey } : {};
+  const response = await requestJson(url, "POST", payload, headers, 300000);
+  const results = normalizeQdrantResults(response);
+  return mapMatches(results, null);
+}
+
+async function askQdrant(question, topK, threshold, collection, modelName, searchMode) {
+  const mode = normalizeSearchMode(searchMode);
+  if (mode === "hybrid") {
+    return askQdrantHybrid(question, topK, collection, modelName);
+  }
+  return askQdrantDense(question, topK, threshold, collection, modelName);
 }
 
 async function askChat(question, matches) {
@@ -373,13 +468,15 @@ const server = http.createServer(async (req, res) => {
       const requestedCollection = payload.collection
         ? String(payload.collection).trim()
         : "";
+      const requestedSearchMode = payload.search_mode || payload.searchMode || "";
       const modelName = resolveModelName(requestedModel);
       const collectionName = requestedCollection || config.qdrantCollection;
       const topK = Math.max(1, Number(payload.topK || 300));
       const threshold = Math.max(0, Math.min(1, Number(payload.threshold || 0.2)));
+      const searchMode = normalizeSearchMode(requestedSearchMode);
       const start = Date.now();
       logLine(
-        `POST /api/ask model=${modelName} collection=${collectionName} topK=${topK} threshold=${threshold.toFixed(
+        `POST /api/ask mode=${searchMode} model=${modelName} collection=${collectionName} topK=${topK} threshold=${threshold.toFixed(
           2
         )}`
       );
@@ -388,7 +485,8 @@ const server = http.createServer(async (req, res) => {
         topK,
         threshold,
         collectionName,
-        modelName
+        modelName,
+        searchMode
       );
       const retrievalMs = Date.now() - start;
       const answer = await askChat(question, matches);
@@ -399,6 +497,7 @@ const server = http.createServer(async (req, res) => {
         threshold,
         model: modelName,
         collection: collectionName,
+        search_mode: searchMode,
         matches,
         answer,
         answer_model: config.chatModel,
@@ -436,13 +535,15 @@ const server = http.createServer(async (req, res) => {
       const requestedCollection = payload.collection
         ? String(payload.collection).trim()
         : "";
+      const requestedSearchMode = payload.search_mode || payload.searchMode || "";
       const modelName = resolveModelName(requestedModel);
       const collectionName = requestedCollection || config.qdrantCollection;
       const topK = Math.max(1, Number(payload.topK || 300));
       const threshold = Math.max(0, Math.min(1, Number(payload.threshold || 0.2)));
+      const searchMode = normalizeSearchMode(requestedSearchMode);
       const start = Date.now();
       logLine(
-        `POST /api/reframe model=${modelName} collection=${collectionName} topK=${topK} threshold=${threshold.toFixed(
+        `POST /api/reframe mode=${searchMode} model=${modelName} collection=${collectionName} topK=${topK} threshold=${threshold.toFixed(
           2
         )} incorrect=${feedbackIncorrect ? "yes" : "no"} missing=${feedbackMissing ? "yes" : "no"}`
       );
@@ -459,7 +560,8 @@ const server = http.createServer(async (req, res) => {
         topK,
         threshold,
         collectionName,
-        modelName
+        modelName,
+        searchMode
       );
       const retrievalMs = Date.now() - retrievalStart;
       const answer = await askChat(question, matches);
@@ -471,6 +573,7 @@ const server = http.createServer(async (req, res) => {
         threshold,
         model: modelName,
         collection: collectionName,
+        search_mode: searchMode,
         matches,
         answer,
         answer_model: config.chatModel,

@@ -34,6 +34,9 @@ const elements = {
   copyChunk: document.getElementById("copyChunk"),
   logView: document.getElementById("logView"),
   clearLogs: document.getElementById("clearLogs"),
+  loadingOverlay: document.getElementById("loadingOverlay"),
+  loadingTitle: document.getElementById("loadingTitle"),
+  loadingSub: document.getElementById("loadingSub"),
   historyLimit: document.getElementById("historyLimit"),
   refreshHistory: document.getElementById("refreshHistory"),
   historyList: document.getElementById("historyList"),
@@ -119,6 +122,14 @@ const chunkList = new VirtualList(elements.chunkList, ROW_HEIGHT, renderChunkRow
 
 function setStatus(message) {
   elements.status.textContent = message;
+}
+
+function setLoadingMessage(title, subText) {
+  if (!elements.loadingTitle || !elements.loadingSub) {
+    return;
+  }
+  elements.loadingTitle.textContent = title || "Generating answer";
+  elements.loadingSub.textContent = subText || "Searching and grounding a response.";
 }
 
 function addLog(message) {
@@ -480,6 +491,10 @@ function setLoadingState(isLoading) {
   elements.searchModeSelect.disabled = isLoading;
   elements.modelSelect.disabled = isLoading;
   elements.collectionSelect.disabled = isLoading;
+  if (elements.loadingOverlay) {
+    elements.loadingOverlay.classList.toggle("active", isLoading);
+    elements.loadingOverlay.setAttribute("aria-hidden", String(!isLoading));
+  }
   updateRefineButtonState();
 }
 
@@ -575,6 +590,10 @@ async function askQuestion() {
     localStorage.setItem("selectedCollection", collection);
   }
   setLoadingState(true);
+  setLoadingMessage(
+    "Generating answer",
+    "Searching Qdrant and grounding the response."
+  );
   setStatus("Searching and generating answer...");
   addLog(
     `Ask: mode=${searchMode} model=${model || "-"} collection=${collection || "-"} topK=${topK} threshold=${threshold.toFixed(
@@ -642,6 +661,10 @@ async function refineQuestion() {
   const model = elements.modelSelect.value;
   const collection = elements.collectionSelect.value;
   setLoadingState(true);
+  setLoadingMessage(
+    "Refining answer",
+    "Reframing the question and searching again."
+  );
   setStatus("Reframing and searching...");
   addLog(
     `Refine: mode=${searchMode} model=${model || "-"} collection=${collection || "-"} topK=${topK} threshold=${threshold.toFixed(

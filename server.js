@@ -38,6 +38,58 @@ function loadDotenv(filePath) {
 loadDotenv(path.join(ROOT_DIR, ".env"));
 loadDotenv(path.join(__dirname, ".env"));
 
+function parseModelList(raw, fallback) {
+  const list = String(raw || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (!list.length && fallback) {
+    return [fallback];
+  }
+  const unique = Array.from(new Set(list));
+  return unique.length ? unique : fallback ? [fallback] : [];
+}
+
+const PROVIDERS_PATH =
+  process.env.CHAT_PROVIDERS_PATH || path.join(__dirname, "chat_providers.json");
+
+const DEFAULT_PROVIDER_CONFIG = {
+  default_provider: "gpt_oss",
+  providers: [
+    {
+      id: "gpt_oss",
+      label: "GPT OSS (Ollama)",
+      type: "ollama",
+      url_env: "GPT_OSS_CHAT_URL",
+      models_env: "GPT_OSS_MODELS",
+      default_model_env: "GPT_OSS_MODEL",
+    },
+  ],
+};
+
+function envValue(key) {
+  return String(process.env[key] || "").trim();
+}
+
+function loadProviderConfig() {
+  if (!fs.existsSync(PROVIDERS_PATH)) {
+    return DEFAULT_PROVIDER_CONFIG;
+  }
+  try {
+    const raw = fs.readFileSync(PROVIDERS_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.providers)) {
+      return DEFAULT_PROVIDER_CONFIG;
+    }
+    return parsed;
+  } catch (err) {
+    logLine(`Failed to load chat providers config: ${err.message || err}`);
+    return DEFAULT_PROVIDER_CONFIG;
+  }
+}
+
+const providerConfig = loadProviderConfig();
+
 const config = {
   qdrantHost: process.env.QDRANT_HOST || "",
   qdrantPort: Number(process.env.QDRANT_PORT || 6333),
@@ -56,6 +108,10 @@ const config = {
   bm25Language: process.env.BM25_LANGUAGE || "en",
   chatUrl: process.env.GPT_OSS_CHAT_URL || "http://ollama.gravity.ind.in:11434/api/chat",
   chatModel: process.env.GPT_OSS_MODEL || "gpt-oss:120b",
+  chatModels: parseModelList(
+    process.env.GPT_OSS_MODELS,
+    process.env.GPT_OSS_MODEL || "gpt-oss:120b"
+  ),
   chatSeed: Number(process.env.GPT_OSS_SEED || 101),
   chatTemperature: Number(process.env.GPT_OSS_TEMPERATURE || 0.0),
   chatTimeoutMs: Number(process.env.GPT_OSS_TIMEOUT || 300000),
@@ -63,6 +119,7 @@ const config = {
 };
 
 const NO_MATCH_RESPONSE = "No relevant action points found.";
+const MATCH_PAYLOAD_FIELDS = ["action_point", "action_id", "circular_name"];
 
 function logLine(message) {
   const timestamp = new Date().toISOString();
@@ -83,7 +140,15 @@ function createRequestId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function buildHistoryConfig(searchMode, modelName, collectionName, topK, threshold) {
+function buildHistoryConfig(
+  searchMode,
+  modelName,
+  collectionName,
+  topK,
+  threshold,
+  chatModel,
+  chatProvider
+) {
   return {
     search: {
       mode: searchMode,
@@ -109,10 +174,11 @@ function buildHistoryConfig(searchMode, modelName, collectionName, topK, thresho
       script: path.basename(EMBED_SCRIPT),
     },
     llm: {
-      model: config.chatModel,
-      url: config.chatUrl,
-      seed: config.chatSeed,
-      temperature: config.chatTemperature,
+      provider: chatProvider ? chatProvider.id : "",
+      model: chatModel,
+      url: chatProvider ? chatProvider.url : config.chatUrl,
+      seed: chatProvider ? chatProvider.seed : config.chatSeed,
+      temperature: chatProvider ? chatProvider.temperature : config.chatTemperature,
     },
   };
 }
@@ -274,6 +340,229 @@ function resolveModelName(modelName) {
   return modelName;
 }
 
+function resolveProviderNumber(provider, key, fallback) {
+  const envKey = provider[`${key}_env`];
+  const envRaw = envKey ? envValue(envKey) : "";
+  const directValue = provider[key];
+  const raw = envRaw || (directValue !== undefined ? String(directValue) : "");
+  if (!raw) {
+    return fallback;
+  }
+  const numeric = Number(raw);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function substituteEnvValues(text) {
+  return String(text || "").replace(/\$\{([A-Z0-9_]+)\}/g, (_, key) => envValue(key));
+}
+
+function buildProviderMeta(definition) {
+  const url =
+    definition.url ||
+    (definition.base_url && definition.path
+      ? `${definition.base_url}${definition.path}`
+      : "") ||
+    (definition.url_env ? envValue(definition.url_env) : "");
+  const models =
+    definition.models ||
+    parseModelList(
+      definition.models_env ? envValue(definition.models_env) : "",
+      definition.default_model_env ? envValue(definition.default_model_env) : ""
+    );
+  const defaultModel =
+    definition.default_model ||
+    (definition.default_model_env ? envValue(definition.default_model_env) : "") ||
+    models[0] ||
+    "";
+  const headers = {};
+  if (definition.headers) {
+    Object.entries(definition.headers).forEach(([key, value]) => {
+      const resolved = substituteEnvValues(value);
+      if (resolved) {
+        headers[key] = resolved;
+      }
+    });
+  }
+  const apiKeyEnv = definition.api_key_env;
+  const apiKey = apiKeyEnv ? envValue(apiKeyEnv) : "";
+  if (definition.type === "openai" && apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
+  }
+  return {
+    id: definition.id,
+    label: definition.label || definition.id,
+    type: definition.type || "ollama",
+    url,
+    headers,
+    models,
+    default_model: defaultModel,
+    response_path: definition.response_path || definition.responsePath || "",
+    request_template: definition.request_template || definition.requestTemplate || null,
+    temperature: resolveProviderNumber(definition, "temperature", config.chatTemperature),
+    seed: resolveProviderNumber(definition, "seed", config.chatSeed),
+    timeout_ms: resolveProviderNumber(definition, "timeout_ms", config.chatTimeoutMs),
+    enabled: Boolean(url) && models.length > 0,
+  };
+}
+
+function listChatProviders() {
+  if (!providerConfig || !Array.isArray(providerConfig.providers)) {
+    return [];
+  }
+  return providerConfig.providers.map(buildProviderMeta);
+}
+
+function getChatProviderMeta(requestedId) {
+  const providers = listChatProviders();
+  if (!providers.length) {
+    throw new Error("No chat providers configured.");
+  }
+  const fallbackId =
+    providerConfig.default_provider || providers[0].id || providers[0].label;
+  const cleaned = String(requestedId || "").trim();
+  const targetId = cleaned || fallbackId;
+  const provider = providers.find((item) => item.id === targetId);
+  if (!provider) {
+    throw new Error("Unknown chat provider.");
+  }
+  return provider;
+}
+
+function resolveChatProvider(requestedId) {
+  const provider = getChatProviderMeta(requestedId);
+  if (!provider.enabled) {
+    throw new Error("Chat provider is not configured.");
+  }
+  return provider;
+}
+
+function resolveChatModel(provider, modelName) {
+  const cleaned = String(modelName || "").trim();
+  const available = provider.models || [];
+  if (!available.length) {
+    return cleaned || provider.default_model;
+  }
+  if (!cleaned) {
+    return available.includes(provider.default_model)
+      ? provider.default_model
+      : available[0];
+  }
+  if (!available.includes(cleaned)) {
+    throw new Error("Unknown chat model.");
+  }
+  return cleaned;
+}
+
+function applyTemplate(value, context) {
+  if (Array.isArray(value)) {
+    return value.map((item) => applyTemplate(item, context));
+  }
+  if (value && typeof value === "object") {
+    const out = {};
+    Object.entries(value).forEach(([key, val]) => {
+      out[key] = applyTemplate(val, context);
+    });
+    return out;
+  }
+  if (typeof value !== "string") {
+    return value;
+  }
+  if (value === "{{messages}}") {
+    return context.messages;
+  }
+  return value.replace(/\{\{(model|temperature|seed)\}\}/g, (_, key) => {
+    const replacement = context[key];
+    return replacement === undefined || replacement === null ? "" : String(replacement);
+  });
+}
+
+function getPathValue(payload, path) {
+  if (!path) {
+    return null;
+  }
+  const normalized = path.replace(/\[(\d+)\]/g, ".$1");
+  const parts = normalized.split(".").filter(Boolean);
+  let current = payload;
+  for (const part of parts) {
+    if (current && typeof current === "object" && part in current) {
+      current = current[part];
+    } else {
+      return null;
+    }
+  }
+  return current;
+}
+
+function buildChatRequest(provider, model, messages, overrides = {}) {
+  const temperature =
+    overrides.temperature !== undefined ? overrides.temperature : provider.temperature;
+  const seed = overrides.seed !== undefined ? overrides.seed : provider.seed;
+  const base = {
+    model,
+    messages,
+    temperature,
+    seed,
+  };
+  let payload = null;
+  if (provider.type === "openai") {
+    payload = {
+      model,
+      messages,
+      temperature,
+      stream: false,
+    };
+    if (Number.isFinite(seed)) {
+      payload.seed = seed;
+    }
+  } else if (provider.type === "custom" && provider.request_template) {
+    payload = applyTemplate(provider.request_template, base);
+  } else {
+    payload = {
+      model,
+      messages,
+      stream: false,
+      options: {
+        seed,
+        temperature,
+      },
+    };
+  }
+  return {
+    url: provider.url,
+    headers: provider.headers || {},
+    payload,
+    timeout_ms: provider.timeout_ms,
+  };
+}
+
+function parseChatResponse(provider, response) {
+  if (provider.type === "openai") {
+    return String(
+      response?.choices?.[0]?.message?.content || response?.choices?.[0]?.text || ""
+    ).trim();
+  }
+  if (provider.type === "custom" && provider.response_path) {
+    const value = getPathValue(response, provider.response_path);
+    if (value === null || value === undefined) {
+      return "";
+    }
+    return typeof value === "string" ? value.trim() : JSON.stringify(value);
+  }
+  return String(response?.message?.content || "").trim();
+}
+
+async function requestChat(provider, model, messages, overrides) {
+  const request = buildChatRequest(provider, model, messages, overrides);
+  const response = await requestJson(
+    request.url,
+    "POST",
+    request.payload,
+    request.headers,
+    request.timeout_ms
+  );
+  return parseChatResponse(provider, response);
+}
+
 function embedQuestion(question, modelName) {
   return new Promise((resolve, reject) => {
     execFile(
@@ -304,15 +593,34 @@ function buildChatMessages(question, matches) {
   const systemPrompt =
     "You answer questions using only the provided action points. " +
     "If the action points are missing or do not answer the question, " +
-    `respond with exactly: "${NO_MATCH_RESPONSE}".`;
+    `respond with exactly: "${NO_MATCH_RESPONSE}". ` +
+    "If circular references are provided, include a short References section listing " +
+    "the circular names you used. Do not mention action ids, indices, or similarity scores.";
   const lines = matches.length
-    ? matches.map((match) => `${match.action_point}`)
+    ? matches.map((match) => {
+        if (match.circular_name) {
+          return `${match.action_point}\nCircular: ${match.circular_name}`;
+        }
+        return `${match.action_point}`;
+      })
     : ["None."];
   const userPrompt = `Question: ${question}\n\nAction points:\n${lines.join("\n")}`;
   return [
     { role: "system", content: systemPrompt },
     { role: "user", content: userPrompt },
   ];
+}
+
+function extractCircularName(payload) {
+  const raw =
+    payload.circular_name ||
+    payload.circular_title ||
+    payload.circular_reference ||
+    payload.circular_ref ||
+    payload.circular ||
+    "";
+  const text = String(raw || "").trim();
+  return text || null;
 }
 
 function mapMatches(results, threshold) {
@@ -323,6 +631,7 @@ function mapMatches(results, threshold) {
         score: Number(item.score || 0),
         action_id: payload.action_id || null,
         action_point: String(payload.action_point || "").trim(),
+        circular_name: extractCircularName(payload),
       };
     })
     .filter((item) => {
@@ -347,7 +656,7 @@ async function askQdrantDense(question, topK, threshold, collection, modelName) 
     query: vector,
     using: config.hybridDenseName,               // named dense vector
     limit: topK,
-    with_payload: ["action_point", "action_id"],
+    with_payload: MATCH_PAYLOAD_FIELDS,
     with_vector: false,
     score_threshold: threshold ?? undefined,     // Qdrant applies it correctly for cosine :contentReference[oaicite:7]{index=7}
   };
@@ -388,7 +697,7 @@ async function askQdrantHybrid(question, topK, collection, modelName) {
     ],
     query: { fusion: "rrf" },
     limit: topK,
-    with_payload: ["action_point", "action_id"],
+    with_payload: MATCH_PAYLOAD_FIELDS,
     with_vector: false,
   };
 
@@ -409,26 +718,12 @@ async function askQdrant(question, topK, threshold, collection, modelName, searc
   return askQdrantDense(question, topK, threshold, collection, modelName);
 }
 
-async function askChat(question, matches) {
+async function askChat(provider, chatModel, question, matches) {
   const messages = buildChatMessages(question, matches);
-  const payload = {
-    model: config.chatModel,
-    messages,
-    stream: false,
-    options: { seed: config.chatSeed, temperature: config.chatTemperature },
-  };
-  const response = await requestJson(
-    config.chatUrl,
-    "POST",
-    payload,
-    null,
-    config.chatTimeoutMs
-  );
-  const message = response.message || {};
-  return String(message.content || "").trim();
+  return requestChat(provider, chatModel, messages);
 }
 
-async function reframeQuestion(question, incorrect, missing) {
+async function reframeQuestion(question, incorrect, missing, provider, chatModel) {
   const systemPrompt =
     "You rewrite user questions for semantic retrieval. " +
     "Return only the rewritten question and nothing else.";
@@ -440,24 +735,13 @@ async function reframeQuestion(question, incorrect, missing) {
     `What is missing: ${missingText || "None."}`,
     "Rewrite:",
   ].join("\n");
-  const payload = {
-    model: config.chatModel,
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt },
-    ],
-    stream: false,
-    options: { seed: config.chatSeed, temperature: 0.0 },
-  };
-  const response = await requestJson(
-    config.chatUrl,
-    "POST",
-    payload,
-    null,
-    config.chatTimeoutMs
-  );
-  const message = response.message || {};
-  const content = String(message.content || "").trim();
+  const messages = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userPrompt },
+  ];
+  const content = await requestChat(provider, chatModel, messages, {
+    temperature: 0.0,
+  });
   return content || question;
 }
 
@@ -513,6 +797,46 @@ const server = http.createServer(async (req, res) => {
       default_model: DEFAULT_LORA_MODEL,
     });
     logLine(`GET /api/models -> ${models.length} models`);
+    return;
+  }
+
+  if (req.method === "GET" && req.url.startsWith("/api/chat-models")) {
+    try {
+      const urlObj = new URL(req.url, "http://localhost");
+      const providerParam = urlObj.searchParams.get("provider") || "";
+      const provider = getChatProviderMeta(providerParam);
+      sendJson(res, 200, {
+        provider: provider.id,
+        models: provider.models || [],
+        default_model: provider.default_model || "",
+        enabled: provider.enabled,
+      });
+      logLine(
+        `GET /api/chat-models provider=${provider.id} -> ${provider.models.length} models`
+      );
+    } catch (err) {
+      sendJson(res, 400, { error: err.message || "Failed to load chat models." });
+      logLine(`GET /api/chat-models error: ${err.message}`);
+    }
+    return;
+  }
+
+  if (req.method === "GET" && req.url.startsWith("/api/chat-providers")) {
+    const providers = listChatProviders().map((provider) => ({
+      id: provider.id,
+      label: provider.label,
+      type: provider.type,
+      enabled: provider.enabled,
+      models: provider.models || [],
+      default_model: provider.default_model || "",
+    }));
+    const fallbackProvider =
+      providerConfig.default_provider || (providers[0] ? providers[0].id : "");
+    sendJson(res, 200, {
+      providers,
+      default_provider: fallbackProvider,
+    });
+    logLine(`GET /api/chat-providers -> ${providers.length} providers`);
     return;
   }
 
@@ -573,14 +897,19 @@ const server = http.createServer(async (req, res) => {
         ? String(payload.collection).trim()
         : "";
       const requestedSearchMode = payload.search_mode || payload.searchMode || "";
+      const requestedChatProvider =
+        payload.chat_provider || payload.chatProvider || "";
+      const requestedChatModel = payload.chat_model || payload.chatModel || "";
       const modelName = resolveModelName(requestedModel);
+      const chatProvider = resolveChatProvider(requestedChatProvider);
+      const chatModel = resolveChatModel(chatProvider, requestedChatModel);
       const collectionName = requestedCollection || config.qdrantCollection;
       const topK = Math.max(1, Number(payload.topK || 300));
       const threshold = Math.max(0, Math.min(1, Number(payload.threshold || 0.2)));
       const searchMode = normalizeSearchMode(requestedSearchMode);
       const start = Date.now();
       logLine(
-        `POST /api/ask mode=${searchMode} model=${modelName} collection=${collectionName} topK=${topK} threshold=${threshold.toFixed(
+        `POST /api/ask mode=${searchMode} model=${modelName} chat_provider=${chatProvider.id} chat_model=${chatModel} collection=${collectionName} topK=${topK} threshold=${threshold.toFixed(
           2
         )}`
       );
@@ -593,7 +922,7 @@ const server = http.createServer(async (req, res) => {
         searchMode
       );
       const retrievalMs = Date.now() - start;
-      const answer = await askChat(question, matches);
+      const answer = await askChat(chatProvider, chatModel, question, matches);
       const totalMs = Date.now() - start;
       const historyRecord = {
         id: requestId,
@@ -607,10 +936,19 @@ const server = http.createServer(async (req, res) => {
         threshold,
         model: modelName,
         collection: collectionName,
-        config: buildHistoryConfig(searchMode, modelName, collectionName, topK, threshold),
+        config: buildHistoryConfig(
+          searchMode,
+          modelName,
+          collectionName,
+          topK,
+          threshold,
+          chatModel,
+          chatProvider
+        ),
         matches,
         answer,
-        answer_model: config.chatModel,
+        answer_provider: chatProvider.id,
+        answer_model: chatModel,
         durations: {
           retrieval_ms: retrievalMs,
           total_ms: totalMs,
@@ -626,7 +964,8 @@ const server = http.createServer(async (req, res) => {
         search_mode: searchMode,
         matches,
         answer,
-        answer_model: config.chatModel,
+        answer_provider: chatProvider.id,
+        answer_model: chatModel,
         durations: {
           retrieval_ms: retrievalMs,
           total_ms: totalMs,
@@ -665,14 +1004,19 @@ const server = http.createServer(async (req, res) => {
         ? String(payload.collection).trim()
         : "";
       const requestedSearchMode = payload.search_mode || payload.searchMode || "";
+      const requestedChatProvider =
+        payload.chat_provider || payload.chatProvider || "";
+      const requestedChatModel = payload.chat_model || payload.chatModel || "";
       const modelName = resolveModelName(requestedModel);
+      const chatProvider = resolveChatProvider(requestedChatProvider);
+      const chatModel = resolveChatModel(chatProvider, requestedChatModel);
       const collectionName = requestedCollection || config.qdrantCollection;
       const topK = Math.max(1, Number(payload.topK || 300));
       const threshold = Math.max(0, Math.min(1, Number(payload.threshold || 0.2)));
       const searchMode = normalizeSearchMode(requestedSearchMode);
       const start = Date.now();
       logLine(
-        `POST /api/reframe mode=${searchMode} model=${modelName} collection=${collectionName} topK=${topK} threshold=${threshold.toFixed(
+        `POST /api/reframe mode=${searchMode} model=${modelName} chat_provider=${chatProvider.id} chat_model=${chatModel} collection=${collectionName} topK=${topK} threshold=${threshold.toFixed(
           2
         )} incorrect=${feedbackIncorrect ? "yes" : "no"} missing=${feedbackMissing ? "yes" : "no"}`
       );
@@ -681,7 +1025,13 @@ const server = http.createServer(async (req, res) => {
       if ((!incorrect && !missing) && legacyFeedback) {
         missing = legacyFeedback;
       }
-      const reframedQuestion = await reframeQuestion(question, incorrect, missing);
+      const reframedQuestion = await reframeQuestion(
+        question,
+        incorrect,
+        missing,
+        chatProvider,
+        chatModel
+      );
       const reframeMs = Date.now() - start;
       const retrievalStart = Date.now();
       const matches = await askQdrant(
@@ -693,7 +1043,7 @@ const server = http.createServer(async (req, res) => {
         searchMode
       );
       const retrievalMs = Date.now() - retrievalStart;
-      const answer = await askChat(question, matches);
+      const answer = await askChat(chatProvider, chatModel, question, matches);
       const totalMs = Date.now() - start;
       const historyRecord = {
         id: requestId,
@@ -712,10 +1062,19 @@ const server = http.createServer(async (req, res) => {
         threshold,
         model: modelName,
         collection: collectionName,
-        config: buildHistoryConfig(searchMode, modelName, collectionName, topK, threshold),
+        config: buildHistoryConfig(
+          searchMode,
+          modelName,
+          collectionName,
+          topK,
+          threshold,
+          chatModel,
+          chatProvider
+        ),
         matches,
         answer,
-        answer_model: config.chatModel,
+        answer_provider: chatProvider.id,
+        answer_model: chatModel,
         durations: {
           reframe_ms: reframeMs,
           retrieval_ms: retrievalMs,
@@ -733,7 +1092,8 @@ const server = http.createServer(async (req, res) => {
         search_mode: searchMode,
         matches,
         answer,
-        answer_model: config.chatModel,
+        answer_provider: chatProvider.id,
+        answer_model: chatModel,
         durations: {
           reframe_ms: reframeMs,
           retrieval_ms: retrievalMs,

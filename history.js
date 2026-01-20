@@ -5,6 +5,7 @@ const elements = {
   historyType: document.getElementById("historyType"),
   historyMode: document.getElementById("historyMode"),
   historyModel: document.getElementById("historyModel"),
+  historyAnswerModel: document.getElementById("historyAnswerModel"),
   historyCollection: document.getElementById("historyCollection"),
   historySort: document.getElementById("historySort"),
   clearFilters: document.getElementById("clearFilters"),
@@ -507,6 +508,7 @@ function applyFilters() {
   const type = elements.historyType.value;
   const mode = elements.historyMode.value;
   const model = elements.historyModel.value;
+  const answerModel = elements.historyAnswerModel.value;
   const collection = elements.historyCollection.value;
   const sort = elements.historySort.value;
   localStorage.setItem("historySort", sort);
@@ -520,6 +522,9 @@ function applyFilters() {
       return false;
     }
     if (model !== "all" && record.model !== model) {
+      return false;
+    }
+    if (answerModel !== "all" && record.answer_model !== answerModel) {
       return false;
     }
     if (collection !== "all" && record.collection !== collection) {
@@ -599,6 +604,9 @@ function renderHistoryList() {
       record.collection || "-",
       record.model || "-",
     ];
+    if (record.answer_provider) {
+      tagValues.push(record.answer_provider);
+    }
     tagValues.forEach((value) => {
       const tag = document.createElement("span");
       tag.className = "tag";
@@ -704,6 +712,7 @@ function renderDetail(record) {
     `Mode: ${record.search_mode || "-"}`,
     `Collection: ${record.collection || "-"}`,
     `Model: ${record.model || "-"}`,
+    `Answer provider: ${record.answer_provider || "-"}`,
     `Answer model: ${record.answer_model || "-"}`,
     `Matches: ${formatNumber(Array.isArray(record.matches) ? record.matches.length : 0)}`,
   ];
@@ -746,6 +755,7 @@ async function loadHistory() {
   setStatus("Loading history...");
   try {
     const currentModel = elements.historyModel.value || "all";
+    const currentAnswerModel = elements.historyAnswerModel.value || "all";
     const currentCollection = elements.historyCollection.value || "all";
     const response = await fetch(`/api/history?limit=${limit}`);
     const payload = await response.json();
@@ -757,12 +767,26 @@ async function loadHistory() {
     buildFilterOptions(state.records, "model", elements.historyModel, "All models");
     buildFilterOptions(
       state.records,
+      "answer_model",
+      elements.historyAnswerModel,
+      "All answer models"
+    );
+    buildFilterOptions(
+      state.records,
       "collection",
       elements.historyCollection,
       "All collections"
     );
     if (currentModel && Array.from(elements.historyModel.options).some((o) => o.value === currentModel)) {
       elements.historyModel.value = currentModel;
+    }
+    if (
+      currentAnswerModel &&
+      Array.from(elements.historyAnswerModel.options).some(
+        (o) => o.value === currentAnswerModel
+      )
+    ) {
+      elements.historyAnswerModel.value = currentAnswerModel;
     }
     if (
       currentCollection &&
@@ -801,6 +825,7 @@ function init() {
   elements.historyType.addEventListener("change", () => applyFilters());
   elements.historyMode.addEventListener("change", () => applyFilters());
   elements.historyModel.addEventListener("change", () => applyFilters());
+  elements.historyAnswerModel.addEventListener("change", () => applyFilters());
   elements.historyCollection.addEventListener("change", () => applyFilters());
   elements.historySort.addEventListener("change", () => applyFilters());
   elements.clearFilters.addEventListener("click", () => {
@@ -808,6 +833,7 @@ function init() {
     elements.historyType.value = "all";
     elements.historyMode.value = "all";
     elements.historyModel.value = "all";
+    elements.historyAnswerModel.value = "all";
     elements.historyCollection.value = "all";
     elements.historySort.value = "time_desc";
     applyFilters();

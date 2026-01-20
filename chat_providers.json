@@ -1,0 +1,77 @@
+{
+  "default_provider": "gpt_oss",
+  "providers": [
+    {
+      "id": "gpt_oss",
+      "label": "GPT OSS (Ollama)",
+      "type": "ollama",
+      "url_env": "GPT_OSS_CHAT_URL",
+      "models_env": "GPT_OSS_MODELS",
+      "default_model_env": "GPT_OSS_MODEL"
+    },
+    {
+      "id": "ollama_cloud",
+      "label": "Ollama Cloud",
+      "type": "ollama",
+      "url_env": "OLLAMA_CLOUD_CHAT_URL",
+      "models_env": "OLLAMA_CLOUD_MODELS",
+      "default_model_env": "OLLAMA_CLOUD_MODEL",
+      "headers": {
+        "Authorization": "Bearer ${OLLAMA_CLOUD_API_KEY}",
+        "Cookie": "${OLLAMA_CLOUD_COOKIE}"
+      }
+    },
+    {
+      "id": "deepseek",
+      "label": "DeepSeek (OpenAI)",
+      "type": "openai",
+      "url_env": "DEEPSEEK_CHAT_URL",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "models_env": "DEEPSEEK_MODELS",
+      "default_model_env": "DEEPSEEK_MODEL"
+    },
+    {
+      "id": "glm",
+      "label": "GLM (OpenAI)",
+      "type": "openai",
+      "url_env": "GLM_CHAT_URL",
+      "api_key_env": "GLM_API_KEY",
+      "models_env": "GLM_MODELS",
+      "default_model_env": "GLM_MODEL"
+    },
+    {
+      "id": "mistral",
+      "label": "Mistral (OpenAI)",
+      "type": "openai",
+      "url_env": "MISTRAL_CHAT_URL",
+      "api_key_env": "MISTRAL_API_KEY",
+      "models_env": "MISTRAL_MODELS",
+      "default_model_env": "MISTRAL_MODEL"
+    },
+    {
+      "id": "llama",
+      "label": "Llama (OpenAI)",
+      "type": "openai",
+      "url_env": "LLAMA_CHAT_URL",
+      "api_key_env": "LLAMA_API_KEY",
+      "models_env": "LLAMA_MODELS",
+      "default_model_env": "LLAMA_MODEL"
+    },
+    {
+      "id": "custom",
+      "label": "Custom JSON",
+      "type": "custom",
+      "url_env": "CUSTOM_CHAT_URL",
+      "models_env": "CUSTOM_CHAT_MODELS",
+      "default_model_env": "CUSTOM_CHAT_MODEL",
+      "response_path": "data.choices[0].message.content",
+      "request_template": {
+        "model": "{{model}}",
+        "messages": "{{messages}}",
+        "temperature": "{{temperature}}",
+        "seed": "{{seed}}",
+        "stream": false
+      }
+    }
+  ]
+}

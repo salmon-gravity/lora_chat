@@ -7,6 +7,8 @@ const elements = {
   searchModeSelect: document.getElementById("searchModeSelect"),
   modelSelect: document.getElementById("modelSelect"),
   collectionSelect: document.getElementById("collectionSelect"),
+  chatProviderSelect: document.getElementById("chatProviderSelect"),
+  chatModelSelect: document.getElementById("chatModelSelect"),
   askButton: document.getElementById("askButton"),
   clearButton: document.getElementById("clearButton"),
   matchCount: document.getElementById("matchCount"),
@@ -62,6 +64,8 @@ const state = {
   chunksVisible: true,
   models: [],
   collections: [],
+  chatProviders: [],
+  selectedChatProvider: "",
   question: "",
   lastAnswerText: "",
   logs: [],
@@ -189,6 +193,25 @@ function historyMatchesCount(record) {
 
 function historyTotalMs(record) {
   return record.durations ? record.durations.total_ms : null;
+}
+
+function findChatProvider(providerId) {
+  return state.chatProviders.find((provider) => provider.id === providerId);
+}
+
+function formatAnswerModel(providerId, modelName) {
+  if (!providerId && !modelName) {
+    return "Model: -";
+  }
+  const provider = findChatProvider(providerId);
+  const label = provider ? provider.label : providerId;
+  if (label && modelName) {
+    return `Model: ${label} / ${modelName}`;
+  }
+  if (label) {
+    return `Model: ${label}`;
+  }
+  return `Model: ${modelName || "-"}`;
 }
 
 function scoreToColor(score) {
@@ -442,9 +465,15 @@ function setInitialAnswer(question, answer, model, durationMs, matches) {
   elements.feedbackHint.textContent = "";
   elements.displayQuestion.textContent = question || "No question yet.";
   elements.initialAnswerBody.innerHTML = renderMarkdown(answer || "No answer available.");
-  elements.initialModel.textContent = model ? `Model: ${model}` : "Model: -";
+  elements.initialModel.textContent = formatAnswerModel(
+    state.selectedChatProvider,
+    model
+  );
   elements.initialTime.textContent = formatDuration(durationMs);
-  elements.answerModel.textContent = model ? `Model: ${model}` : "Model: -";
+  elements.answerModel.textContent = formatAnswerModel(
+    state.selectedChatProvider,
+    model
+  );
   elements.totalTime.textContent = formatDuration(durationMs);
   elements.copyAnswer.disabled = !answer;
   elements.copyAnswer.dataset.copyText = answer || "";
@@ -466,9 +495,15 @@ function setInitialAnswer(question, answer, model, durationMs, matches) {
 function setRefinedAnswer(reframedQuestion, answer, model, durationMs, matches) {
   elements.reframedQuestion.textContent = reframedQuestion || "-";
   elements.refinedAnswerBody.innerHTML = renderMarkdown(answer || "No answer available.");
-  elements.refinedModel.textContent = model ? `Model: ${model}` : "Model: -";
+  elements.refinedModel.textContent = formatAnswerModel(
+    state.selectedChatProvider,
+    model
+  );
   elements.refinedTime.textContent = formatDuration(durationMs);
-  elements.answerModel.textContent = model ? `Model: ${model}` : "Model: -";
+  elements.answerModel.textContent = formatAnswerModel(
+    state.selectedChatProvider,
+    model
+  );
   elements.totalTime.textContent = formatDuration(durationMs);
   elements.copyAnswer.disabled = !answer;
   elements.copyAnswer.dataset.copyText = answer || "";
@@ -491,6 +526,8 @@ function setLoadingState(isLoading) {
   elements.searchModeSelect.disabled = isLoading;
   elements.modelSelect.disabled = isLoading;
   elements.collectionSelect.disabled = isLoading;
+  elements.chatProviderSelect.disabled = isLoading;
+  elements.chatModelSelect.disabled = isLoading;
   if (elements.loadingOverlay) {
     elements.loadingOverlay.classList.toggle("active", isLoading);
     elements.loadingOverlay.setAttribute("aria-hidden", String(!isLoading));
@@ -513,7 +550,7 @@ function fillSelect(select, options, selectedValue) {
     option.textContent = "Unavailable";
     select.appendChild(option);
     select.value = "";
-    return;
+    return "";
   }
   options.forEach((value) => {
     const option = document.createElement("option");
@@ -526,14 +563,68 @@ function fillSelect(select, options, selectedValue) {
   } else {
     select.value = options[0];
   }
+  return select.value;
+}
+
+function fillProviderSelect(select, providers, selectedValue) {
+  select.innerHTML = "";
+  if (!providers.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Unavailable";
+    select.appendChild(option);
+    select.value = "";
+    return "";
+  }
+  const enabledProviders = providers.filter((provider) => provider.enabled);
+  providers.forEach((provider) => {
+    const option = document.createElement("option");
+    option.value = provider.id;
+    option.textContent = provider.label || provider.id;
+    option.disabled = !provider.enabled;
+    select.appendChild(option);
+  });
+  const fallback =
+    enabledProviders.find((provider) => provider.id === selectedValue)?.id ||
+    (enabledProviders[0] ? enabledProviders[0].id : providers[0].id);
+  select.value = fallback || "";
+  return select.value;
+}
+
+function getStoredChatModel(providerId) {
+  if (!providerId) {
+    return "";
+  }
+  const perProvider = localStorage.getItem(`selectedChatModel:${providerId}`);
+  if (perProvider) {
+    return perProvider;
+  }
+  return localStorage.getItem("selectedChatModel") || "";
+}
+
+function updateChatModelSelect(providerId) {
+  const provider = findChatProvider(providerId);
+  const models = provider ? provider.models || [] : [];
+  const storedModel = getStoredChatModel(providerId);
+  const defaultModel = provider ? provider.default_model : "";
+  const selectedModel = fillSelect(
+    elements.chatModelSelect,
+    models,
+    storedModel || defaultModel
+  );
+  if (selectedModel && providerId) {
+    localStorage.setItem(`selectedChatModel:${providerId}`, selectedModel);
+  }
+  return selectedModel;
 }
 
 async function loadSelectOptions() {
   try {
     addLog("Loading models and collections.");
-    const [modelsRes, collectionsRes] = await Promise.all([
+    const [modelsRes, collectionsRes, providersRes] = await Promise.all([
       fetch("/api/models"),
       fetch("/api/collections"),
+      fetch("/api/chat-providers"),
     ]);
     const modelsPayload = await modelsRes.json();
     const collectionsPayload = await collectionsRes.json();
@@ -541,12 +632,19 @@ async function loadSelectOptions() {
     const collections = Array.isArray(collectionsPayload.collections)
       ? collectionsPayload.collections
       : [];
+    const providersPayload = await providersRes.json();
+    const providers = Array.isArray(providersPayload.providers)
+      ? providersPayload.providers
+      : [];
     state.models = models;
     state.collections = collections;
+    state.chatProviders = providers;
     const storedModel = localStorage.getItem("selectedModel");
     const storedCollection = localStorage.getItem("selectedCollection");
+    const storedChatProvider = localStorage.getItem("selectedChatProvider");
     const defaultModel = modelsPayload.default_model || "";
     const defaultCollection = collectionsPayload.default_collection || "";
+    const defaultChatProvider = providersPayload.default_provider || "";
     fillSelect(
       elements.modelSelect,
       models,
@@ -557,12 +655,22 @@ async function loadSelectOptions() {
       collections,
       storedCollection || defaultCollection
     );
+    const providerId = fillProviderSelect(
+      elements.chatProviderSelect,
+      providers,
+      storedChatProvider || defaultChatProvider
+    );
+    state.selectedChatProvider = providerId;
+    if (providerId) {
+      localStorage.setItem("selectedChatProvider", providerId);
+    }
+    updateChatModelSelect(providerId);
     addLog(
-      `Loaded ${models.length} models, ${collections.length} collections.`
+      `Loaded ${models.length} models, ${collections.length} collections, ${providers.length} chat providers.`
     );
   } catch (err) {
-    setStatus("Could not load models or collections.");
-    addLog("Failed to load models or collections.");
+    setStatus("Could not load models, collections, or chat providers.");
+    addLog("Failed to load models, collections, or chat providers.");
   }
 }
 
@@ -580,6 +688,8 @@ async function askQuestion() {
   const searchMode = elements.searchModeSelect.value || DEFAULT_SEARCH_MODE;
   const model = elements.modelSelect.value;
   const collection = elements.collectionSelect.value;
+  const chatProvider = elements.chatProviderSelect.value;
+  const chatModel = elements.chatModelSelect.value;
   localStorage.setItem("topK", String(topK));
   localStorage.setItem("threshold", String(threshold));
   localStorage.setItem("searchMode", searchMode);
@@ -589,6 +699,13 @@ async function askQuestion() {
   if (collection) {
     localStorage.setItem("selectedCollection", collection);
   }
+  if (chatProvider) {
+    localStorage.setItem("selectedChatProvider", chatProvider);
+  }
+  if (chatModel && chatProvider) {
+    localStorage.setItem(`selectedChatModel:${chatProvider}`, chatModel);
+    localStorage.setItem("selectedChatModel", chatModel);
+  }
   setLoadingState(true);
   setLoadingMessage(
     "Generating answer",
@@ -596,7 +713,7 @@ async function askQuestion() {
   );
   setStatus("Searching and generating answer...");
   addLog(
-    `Ask: mode=${searchMode} model=${model || "-"} collection=${collection || "-"} topK=${topK} threshold=${threshold.toFixed(
+    `Ask: mode=${searchMode} model=${model || "-"} chat_provider=${chatProvider || "-"} chat_model=${chatModel || "-"} collection=${collection || "-"} topK=${topK} threshold=${threshold.toFixed(
       2
     )}`
   );
@@ -611,6 +728,8 @@ async function askQuestion() {
         model,
         collection,
         search_mode: searchMode,
+        chat_provider: chatProvider,
+        chat_model: chatModel,
       }),
     });
     const payload = await response.json();
@@ -618,6 +737,7 @@ async function askQuestion() {
       throw new Error(payload.error || "Request failed.");
     }
     const durationMs = payload.durations ? payload.durations.total_ms : 0;
+    state.selectedChatProvider = payload.answer_provider || chatProvider;
     setInitialAnswer(
       payload.question,
       payload.answer,
@@ -660,6 +780,8 @@ async function refineQuestion() {
   const searchMode = elements.searchModeSelect.value || DEFAULT_SEARCH_MODE;
   const model = elements.modelSelect.value;
   const collection = elements.collectionSelect.value;
+  const chatProvider = elements.chatProviderSelect.value;
+  const chatModel = elements.chatModelSelect.value;
   setLoadingState(true);
   setLoadingMessage(
     "Refining answer",
@@ -667,7 +789,7 @@ async function refineQuestion() {
   );
   setStatus("Reframing and searching...");
   addLog(
-    `Refine: mode=${searchMode} model=${model || "-"} collection=${collection || "-"} topK=${topK} threshold=${threshold.toFixed(
+    `Refine: mode=${searchMode} model=${model || "-"} chat_provider=${chatProvider || "-"} chat_model=${chatModel || "-"} collection=${collection || "-"} topK=${topK} threshold=${threshold.toFixed(
       2
     )} incorrect=${feedbackIncorrect ? "yes" : "no"} missing=${feedbackMissing ? "yes" : "no"}`
   );
@@ -684,6 +806,8 @@ async function refineQuestion() {
         model,
         collection,
         search_mode: searchMode,
+        chat_provider: chatProvider,
+        chat_model: chatModel,
       }),
     });
     const payload = await response.json();
@@ -691,6 +815,7 @@ async function refineQuestion() {
       throw new Error(payload.error || "Request failed.");
     }
     const durationMs = payload.durations ? payload.durations.total_ms : 0;
+    state.selectedChatProvider = payload.answer_provider || chatProvider;
     setRefinedAnswer(
       payload.reframed_question,
       payload.answer,
@@ -800,6 +925,21 @@ function init() {
     const model = elements.modelSelect.value;
     if (model) {
       localStorage.setItem("selectedModel", model);
+    }
+  });
+  elements.chatProviderSelect.addEventListener("change", () => {
+    const providerId = elements.chatProviderSelect.value;
+    state.selectedChatProvider = providerId;
+    if (providerId) {
+      localStorage.setItem("selectedChatProvider", providerId);
+    }
+    updateChatModelSelect(providerId);
+  });
+  elements.chatModelSelect.addEventListener("change", () => {
+    const chatModel = elements.chatModelSelect.value;
+    const providerId = elements.chatProviderSelect.value;
+    if (chatModel && providerId) {
+      localStorage.setItem(`selectedChatModel:${providerId}`, chatModel);
     }
   });
   elements.collectionSelect.addEventListener("change", () => {

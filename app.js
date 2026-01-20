@@ -34,11 +34,20 @@ const elements = {
   copyChunk: document.getElementById("copyChunk"),
   logView: document.getElementById("logView"),
   clearLogs: document.getElementById("clearLogs"),
+  historyLimit: document.getElementById("historyLimit"),
+  refreshHistory: document.getElementById("refreshHistory"),
+  historyList: document.getElementById("historyList"),
+  historyMeta: document.getElementById("historyMeta"),
+  historyQuestion: document.getElementById("historyQuestion"),
+  historyQuery: document.getElementById("historyQuery"),
+  historyAnswer: document.getElementById("historyAnswer"),
+  historyRaw: document.getElementById("historyRaw"),
 };
 
 const DEFAULT_TOP_K = 300;
 const DEFAULT_THRESHOLD = 0.2;
 const DEFAULT_SEARCH_MODE = "dense";
+const DEFAULT_HISTORY_LIMIT = 200;
 const ROW_HEIGHT = 86;
 
 const state = {
@@ -54,6 +63,8 @@ const state = {
   lastAnswerText: "",
   logs: [],
   isLoading: false,
+  history: [],
+  selectedHistoryIndex: null,
 };
 
 class VirtualList {
@@ -135,6 +146,38 @@ function formatDuration(ms) {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function formatTimestamp(iso) {
+  if (!iso) {
+    return "-";
+  }
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
+  return date.toLocaleString("en-US", { hour12: false });
+}
+
+function historyTitle(record) {
+  return (
+    record.question ||
+    record.reframed_question ||
+    record.retrieval_query ||
+    "Untitled request"
+  );
+}
+
+function historyMode(record) {
+  return record.search_mode || (record.search && record.search.mode) || "-";
+}
+
+function historyMatchesCount(record) {
+  return Array.isArray(record.matches) ? record.matches.length : 0;
+}
+
+function historyTotalMs(record) {
+  return record.durations ? record.durations.total_ms : null;
 }
 
 function scoreToColor(score) {
@@ -377,6 +420,10 @@ function updateChunkList() {
   }
 }
 
+function loadHistory() {
+  return Promise.resolve();
+}
+
 function setInitialAnswer(question, answer, model, durationMs, matches) {
   state.question = question || "";
   elements.feedbackIncorrect.value = "";
@@ -559,6 +606,7 @@ async function askQuestion() {
       durationMs,
       payload.matches
     );
+    loadHistory();
     addLog(
       `Initial answer: matches=${payload.matches.length} duration=${formatDuration(
         durationMs
@@ -627,6 +675,7 @@ async function refineQuestion() {
       durationMs,
       payload.matches
     );
+    loadHistory();
     addLog(`Reframed question: ${payload.reframed_question}`);
     addLog(
       `Refined answer: matches=${payload.matches.length} duration=${formatDuration(

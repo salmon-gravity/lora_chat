@@ -9,6 +9,9 @@ const STATIC_DIR = __dirname;
 const EMBED_SCRIPT = path.join(__dirname, "embed_lora.py");
 const TRAINED_ROOT = path.join(__dirname, "models");
 const DEFAULT_LORA_MODEL = process.env.LORA_MODEL || "epoch_11_75k_data";
+const HISTORY_PATH =
+  process.env.CHAT_HISTORY_PATH || path.join(__dirname, "history.jsonl");
+const HISTORY_LIMIT_DEFAULT = Number(process.env.CHAT_HISTORY_LIMIT || 200);
 
 function loadDotenv(filePath) {
   if (!fs.existsSync(filePath)) {
@@ -63,6 +66,80 @@ const NO_MATCH_RESPONSE = "No relevant action points found.";
 function logLine(message) {
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] ${message}`);
+}
+
+function ensureDirectory(filePath) {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+}
+
+function createRequestId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function buildHistoryConfig(searchMode, modelName, collectionName, topK, threshold) {
+  return {
+    search: {
+      mode: searchMode,
+      top_k: topK,
+      threshold,
+      collection: collectionName,
+    },
+    qdrant: {
+      host: config.qdrantHost,
+      port: config.qdrantPort,
+      https: config.qdrantHttps,
+      dense_vector_name: config.hybridDenseName,
+      sparse_vector_name: config.hybridSparseName,
+      prefetch_limit: config.hybridPrefetchLimit,
+      bm25_avg_len: config.bm25AvgLen,
+      bm25_k: config.bm25K,
+      bm25_b: config.bm25B,
+      bm25_language: config.bm25Language,
+      api_key_present: Boolean(config.qdrantApiKey),
+    },
+    embedding: {
+      lora_model: modelName,
+      script: path.basename(EMBED_SCRIPT),
+    },
+    llm: {
+      model: config.chatModel,
+      url: config.chatUrl,
+      seed: config.chatSeed,
+      temperature: config.chatTemperature,
+    },
+  };
+}
+
+function appendHistoryRecord(record) {
+  try {
+    ensureDirectory(HISTORY_PATH);
+    fs.appendFileSync(HISTORY_PATH, `${JSON.stringify(record)}\n`, "utf8");
+  } catch (err) {
+    logLine(`History write error: ${err.message || err}`);
+  }
+}
+
+function readHistory(limit) {
+  if (!fs.existsSync(HISTORY_PATH)) {
+    return { items: [], total: 0 };
+  }
+  const content = fs.readFileSync(HISTORY_PATH, "utf8");
+  const lines = content.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  const total = lines.length;
+  const sliceFrom = Math.max(0, total - limit);
+  const items = [];
+  for (const line of lines.slice(sliceFrom)) {
+    try {
+      items.push(JSON.parse(line));
+    } catch (err) {
+      continue;
+    }
+  }
+  items.reverse();
+  return { items, total };
 }
 
 function parseJsonBody(req) {
@@ -393,8 +470,11 @@ function serveStatic(req, res) {
   const fileMap = {
     "/": "index.html",
     "/index.html": "index.html",
+    "/history": "history.html",
+    "/history.html": "history.html",
     "/styles.css": "styles.css",
     "/app.js": "app.js",
+    "/history.js": "history.js",
   };
   const pathname = new URL(req.url, "http://localhost").pathname;
   const fileName = fileMap[pathname];
@@ -456,6 +536,20 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "GET" && req.url.startsWith("/api/history")) {
+    const urlObj = new URL(req.url, "http://localhost");
+    const limitParam = Number(urlObj.searchParams.get("limit") || 0);
+    const limit = Math.max(1, limitParam || HISTORY_LIMIT_DEFAULT);
+    const result = readHistory(limit);
+    sendJson(res, 200, {
+      items: result.items,
+      total: result.total,
+      limit,
+    });
+    logLine(`GET /api/history -> ${result.items.length} items`);
+    return;
+  }
+
   if (req.method === "GET") {
     serveStatic(req, res);
     return;
@@ -469,6 +563,7 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { error: "Question is required." });
         return;
       }
+      const requestId = createRequestId();
       const requestedModel = payload.model ? String(payload.model).trim() : "";
       const requestedCollection = payload.collection
         ? String(payload.collection).trim()
@@ -496,6 +591,27 @@ const server = http.createServer(async (req, res) => {
       const retrievalMs = Date.now() - start;
       const answer = await askChat(question, matches);
       const totalMs = Date.now() - start;
+      const historyRecord = {
+        id: requestId,
+        type: "ask",
+        timestamp: new Date().toISOString(),
+        question,
+        retrieval_query: question,
+        search_mode: searchMode,
+        top_k: topK,
+        threshold,
+        model: modelName,
+        collection: collectionName,
+        config: buildHistoryConfig(searchMode, modelName, collectionName, topK, threshold),
+        matches,
+        answer,
+        answer_model: config.chatModel,
+        durations: {
+          retrieval_ms: retrievalMs,
+          total_ms: totalMs,
+        },
+      };
+      appendHistoryRecord(historyRecord);
       sendJson(res, 200, {
         question,
         topK,
@@ -510,6 +626,7 @@ const server = http.createServer(async (req, res) => {
           retrieval_ms: retrievalMs,
           total_ms: totalMs,
         },
+        request_id: requestId,
       });
       logLine(
         `POST /api/ask done matches=${matches.length} total_ms=${totalMs}`
@@ -536,6 +653,7 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { error: "Feedback is required." });
         return;
       }
+      const requestId = createRequestId();
       const requestedModel = payload.model ? String(payload.model).trim() : "";
       const requestedCollection = payload.collection
         ? String(payload.collection).trim()
@@ -571,6 +689,33 @@ const server = http.createServer(async (req, res) => {
       const retrievalMs = Date.now() - retrievalStart;
       const answer = await askChat(question, matches);
       const totalMs = Date.now() - start;
+      const historyRecord = {
+        id: requestId,
+        type: "reframe",
+        timestamp: new Date().toISOString(),
+        question,
+        reframed_question: reframedQuestion,
+        retrieval_query: reframedQuestion,
+        feedback: {
+          incorrect,
+          missing,
+        },
+        search_mode: searchMode,
+        top_k: topK,
+        threshold,
+        model: modelName,
+        collection: collectionName,
+        config: buildHistoryConfig(searchMode, modelName, collectionName, topK, threshold),
+        matches,
+        answer,
+        answer_model: config.chatModel,
+        durations: {
+          reframe_ms: reframeMs,
+          retrieval_ms: retrievalMs,
+          total_ms: totalMs,
+        },
+      };
+      appendHistoryRecord(historyRecord);
       sendJson(res, 200, {
         question,
         reframed_question: reframedQuestion,
@@ -587,6 +732,7 @@ const server = http.createServer(async (req, res) => {
           retrieval_ms: retrievalMs,
           total_ms: totalMs,
         },
+        request_id: requestId,
       });
       logLine(
         `POST /api/reframe done matches=${matches.length} total_ms=${totalMs}`

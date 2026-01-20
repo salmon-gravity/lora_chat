@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LoRA Search History</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="history-page">
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-title">LoRA Search History</div>
+          <div class="brand-sub">JSONL request log with configs and answers</div>
+        </div>
+        <nav class="nav-links">
+          <a class="nav-link" href="/">Search</a>
+          <a class="nav-link active" href="/history.html">History</a>
+        </nav>
+        <div class="status" id="status">Idle</div>
+      </header>
+
+      <section class="panel history-filters-panel">
+        <details class="history-collapsible">
+          <summary>History filters</summary>
+          <div class="panel-sub">Filter, sort, and scan the request archive for patterns.</div>
+          <div class="history-filter-grid">
+            <label class="control">
+              <span>Rows</span>
+              <input id="historyLimit" type="number" min="1" step="1" />
+            </label>
+            <label class="control">
+              <span>Search</span>
+              <input id="historySearch" type="search" placeholder="Search question, query, answer..." />
+            </label>
+            <label class="control">
+              <span>Type</span>
+              <select id="historyType">
+                <option value="all">All</option>
+                <option value="ask">Ask</option>
+                <option value="reframe">Reframe</option>
+              </select>
+            </label>
+            <label class="control">
+              <span>Mode</span>
+              <select id="historyMode">
+                <option value="all">All</option>
+                <option value="dense">Dense</option>
+                <option value="hybrid">Dense + BM25</option>
+              </select>
+            </label>
+            <label class="control">
+              <span>Model</span>
+              <select id="historyModel"></select>
+            </label>
+            <label class="control">
+              <span>Collection</span>
+              <select id="historyCollection"></select>
+            </label>
+            <label class="control">
+              <span>Sort by</span>
+              <select id="historySort">
+                <option value="time_desc">Newest first</option>
+                <option value="time_asc">Oldest first</option>
+                <option value="total_desc">Longest total time</option>
+                <option value="total_asc">Shortest total time</option>
+                <option value="matches_desc">Most matches</option>
+                <option value="matches_asc">Least matches</option>
+              </select>
+            </label>
+          </div>
+          <div class="panel-actions">
+            <div class="history-summary">
+              Showing <strong id="historyShown">0</strong> of
+              <strong id="historyTotal">0</strong>
+            </div>
+            <div class="history-actions">
+              <button class="btn ghost" id="clearFilters">Clear filters</button>
+              <button class="btn ghost" id="refreshHistory">Refresh</button>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <section class="panel history-insights">
+        <details class="history-collapsible">
+          <summary>Insights</summary>
+          <div class="panel-sub">High-level performance and coverage signals.</div>
+          <div class="panel-header">
+            <div></div>
+            <div class="insight-timestamp" id="insightTimestamp">Updated -</div>
+          </div>
+          <div class="insight-grid">
+            <div class="insight-card">
+              <div class="insight-label">Total records</div>
+              <div class="insight-value" id="insightTotal">0</div>
+              <div class="insight-sub" id="insightAskReframe">Ask: 0 | Reframe: 0</div>
+            </div>
+            <div class="insight-card">
+              <div class="insight-label">Search modes</div>
+              <div class="insight-value" id="insightModes">Dense 0</div>
+              <div class="insight-sub" id="insightModesSub">Hybrid 0</div>
+            </div>
+            <div class="insight-card">
+              <div class="insight-label">Matches</div>
+              <div class="insight-value" id="insightAvgMatches">0 avg</div>
+              <div class="insight-sub" id="insightMedianMatches">0 median</div>
+            </div>
+            <div class="insight-card">
+              <div class="insight-label">Retrieval time</div>
+              <div class="insight-value" id="insightAvgRetrieval">00:00</div>
+              <div class="insight-sub" id="insightP95Retrieval">P95 00:00</div>
+            </div>
+            <div class="insight-card">
+              <div class="insight-label">Total time</div>
+              <div class="insight-value" id="insightAvgTotal">00:00</div>
+              <div class="insight-sub" id="insightP95Total">P95 00:00</div>
+            </div>
+            <div class="insight-card">
+              <div class="insight-label">Feedback coverage</div>
+              <div class="insight-value" id="insightFeedback">0%</div>
+              <div class="insight-sub" id="insightFeedbackSub">0 with feedback</div>
+            </div>
+          </div>
+          <div class="insight-charts">
+            <div class="insight-chart">
+              <div class="insight-label">Top collections</div>
+              <div class="insight-list" id="insightCollections"></div>
+            </div>
+            <div class="insight-chart">
+              <div class="insight-label">Top models</div>
+              <div class="insight-list" id="insightModels"></div>
+            </div>
+            <div class="insight-chart">
+              <div class="insight-label">Latency distribution</div>
+              <div class="insight-bars" id="insightLatency"></div>
+            </div>
+            <div class="insight-chart">
+              <div class="insight-label">Matches distribution</div>
+              <div class="insight-bars" id="insightMatches"></div>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <section class="panel history-panel">
+        <div class="history-content history-full">
+          <div class="history-list" id="historyList"></div>
+          <div class="history-detail">
+            <div class="history-detail-header">
+              <div>
+                <div class="history-title">Selected record</div>
+                <div class="history-meta" id="historyMeta">No history loaded.</div>
+              </div>
+              <div class="history-chips" id="historyChips"></div>
+            </div>
+
+            <div class="history-key-grid">
+              <div class="history-block card">
+                <div class="history-label">Question</div>
+                <div class="history-text" id="historyQuestion">-</div>
+              </div>
+              <div class="history-block card">
+                <div class="history-label">Retrieval query</div>
+                <div class="history-text" id="historyQuery">-</div>
+              </div>
+              <div class="history-block card">
+                <div class="history-label">Reframed question</div>
+                <div class="history-text" id="historyReframed">-</div>
+              </div>
+              <div class="history-block card">
+                <div class="history-label">Feedback</div>
+                <div class="history-text" id="historyFeedback">-</div>
+              </div>
+            </div>
+
+            <div class="history-block card">
+              <div class="history-block-header">
+                <div class="history-label">Answer</div>
+                <div class="history-block-actions">
+                  <button class="btn ghost" id="copyAnswer" disabled>Copy answer</button>
+                </div>
+              </div>
+              <div class="markdown history-answer" id="historyAnswer">-</div>
+            </div>
+            <div class="history-block card">
+              <div class="history-block-header">
+                <div class="history-label">Matches</div>
+                <input id="historyMatchFilter" type="search" placeholder="Filter matches" />
+              </div>
+              <div class="history-matches" id="historyMatches"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <script src="history.js" defer></script>
+  </body>
+</html>

@@ -2,6 +2,7 @@ const http = require("http");
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { execFile } = require("child_process");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
@@ -76,6 +77,9 @@ function ensureDirectory(filePath) {
 }
 
 function createRequestId() {
+  if (crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
@@ -593,6 +597,7 @@ const server = http.createServer(async (req, res) => {
       const totalMs = Date.now() - start;
       const historyRecord = {
         id: requestId,
+        record_id: requestId,
         type: "ask",
         timestamp: new Date().toISOString(),
         question,
@@ -627,6 +632,7 @@ const server = http.createServer(async (req, res) => {
           total_ms: totalMs,
         },
         request_id: requestId,
+        record_id: requestId,
       });
       logLine(
         `POST /api/ask done matches=${matches.length} total_ms=${totalMs}`
@@ -691,6 +697,7 @@ const server = http.createServer(async (req, res) => {
       const totalMs = Date.now() - start;
       const historyRecord = {
         id: requestId,
+        record_id: requestId,
         type: "reframe",
         timestamp: new Date().toISOString(),
         question,
@@ -733,6 +740,7 @@ const server = http.createServer(async (req, res) => {
           total_ms: totalMs,
         },
         request_id: requestId,
+        record_id: requestId,
       });
       logLine(
         `POST /api/reframe done matches=${matches.length} total_ms=${totalMs}`

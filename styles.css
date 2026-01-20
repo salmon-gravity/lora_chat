@@ -918,6 +918,30 @@ body {
   border-bottom: 1px solid rgba(213, 209, 198, 0.6);
 }
 
+.history-id-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px dashed rgba(213, 209, 198, 0.8);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.history-id-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+}
+
+.history-id-value {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  word-break: break-all;
+}
+
 .history-title {
   font-size: 11px;
   text-transform: uppercase;

@@ -31,6 +31,8 @@ const elements = {
   historyList: document.getElementById("historyList"),
   historyMeta: document.getElementById("historyMeta"),
   historyChips: document.getElementById("historyChips"),
+  historyId: document.getElementById("historyId"),
+  copyHistoryId: document.getElementById("copyHistoryId"),
   historyQuestion: document.getElementById("historyQuestion"),
   historyQuery: document.getElementById("historyQuery"),
   historyReframed: document.getElementById("historyReframed"),
@@ -674,6 +676,9 @@ function renderDetail(record) {
   if (!record) {
     elements.historyMeta.textContent = "No record selected.";
     elements.historyChips.textContent = "";
+    elements.historyId.textContent = "-";
+    elements.copyHistoryId.disabled = true;
+    elements.copyHistoryId.dataset.copyText = "";
     elements.historyQuestion.textContent = "-";
     elements.historyQuery.textContent = "-";
     elements.historyReframed.textContent = "-";
@@ -709,6 +714,10 @@ function renderDetail(record) {
     chip.textContent = text;
     elements.historyChips.appendChild(chip);
   });
+  const recordId = record.record_id || record.id || record.request_id || "-";
+  elements.historyId.textContent = recordId;
+  elements.copyHistoryId.disabled = recordId === "-";
+  elements.copyHistoryId.dataset.copyText = recordId === "-" ? "" : recordId;
   elements.historyQuestion.textContent = record.question || "-";
   elements.historyQuery.textContent =
     record.retrieval_query || record.reframed_question || record.question || "-";
@@ -818,6 +827,18 @@ function init() {
     try {
       await navigator.clipboard.writeText(text);
       setStatus("Copied answer to clipboard.");
+    } catch (err) {
+      setStatus("Copy failed.");
+    }
+  });
+  elements.copyHistoryId.addEventListener("click", async () => {
+    const text = elements.copyHistoryId.dataset.copyText || "";
+    if (!text) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatus("Copied record ID to clipboard.");
     } catch (err) {
       setStatus("Copy failed.");
     }

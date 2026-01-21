@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LoRA Compare</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="compare-page">
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-title">LoRA Compare</div>
+          <div class="brand-sub">Compare analysis results and final answers across questions</div>
+        </div>
+        <nav class="nav-links">
+          <a class="nav-link" href="/">Search</a>
+          <a class="nav-link" href="/history.html">History</a>
+          <a class="nav-link" href="/analyse.html">Analyse</a>
+          <a class="nav-link active" href="/compare.html">Compare</a>
+        </nav>
+        <div class="status" id="status">Idle</div>
+      </header>
+
+      <section class="panel compare-controls">
+        <details class="compare-collapsible">
+          <summary>
+            <span class="panel-title">Comparison filters</span>
+          </summary>
+          <div class="panel-sub">Select multiple questions to compare analysis coverage and answers side by side.</div>
+          <div class="compare-control-grid">
+            <label class="control">
+              <span>Rows</span>
+              <input id="compareLimit" type="number" min="1" step="1" />
+            </label>
+            <label class="control">
+              <span>Search</span>
+              <input id="compareSearch" type="search" placeholder="Search question or answer..." />
+            </label>
+            <label class="control">
+              <span>Type</span>
+              <select id="compareType">
+                <option value="all">All</option>
+                <option value="ask">Ask</option>
+                <option value="reframe">Reframe</option>
+              </select>
+            </label>
+            <label class="control">
+              <span>Mode</span>
+              <select id="compareMode">
+                <option value="all">All</option>
+                <option value="dense">Dense</option>
+                <option value="hybrid">Dense + BM25</option>
+              </select>
+            </label>
+            <label class="control">
+              <span>Collection</span>
+              <select id="compareCollection"></select>
+            </label>
+            <label class="control">
+              <span>Answer model</span>
+              <select id="compareAnswerModel"></select>
+            </label>
+            <label class="control">
+              <span>Sort by</span>
+              <select id="compareSort">
+                <option value="time_desc">Newest first</option>
+                <option value="time_asc">Oldest first</option>
+                <option value="matches_desc">Most matches</option>
+                <option value="matches_asc">Least matches</option>
+              </select>
+            </label>
+          </div>
+          <div class="compare-actions">
+            <button class="btn ghost" id="refreshCompare">Refresh</button>
+            <div class="compare-summary">
+              Showing <strong id="compareShown">0</strong> of
+              <strong id="compareTotal">0</strong>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <section class="panel compare-list-section">
+        <details class="compare-collapsible compare-list-collapsible">
+          <summary>
+            <span class="compare-list-title">Question list</span>
+            <span class="compare-list-meta">Toggle any question to include it in the comparison.</span>
+          </summary>
+          <div class="compare-list" id="compareList"></div>
+        </details>
+      </section>
+
+      <section class="panel compare-panel">
+        <div class="compare-panel-header">
+          <div>
+            <div class="compare-title">Selected questions</div>
+            <div class="compare-meta" id="compareMeta">No questions selected.</div>
+          </div>
+          <div class="compare-detail-actions">
+            <button class="btn ghost" id="selectFiltered">Select filtered</button>
+            <button class="btn ghost" id="clearSelection">Clear selection</button>
+          </div>
+        </div>
+
+        <div class="compare-selected-grid" id="compareSelectedGrid"></div>
+
+        <div class="compare-summary-grid">
+          <div class="compare-summary-card">
+            <div class="compare-metric-label">Selected</div>
+            <div class="compare-metric-value" id="compareSelectedCount">0</div>
+          </div>
+          <div class="compare-summary-card">
+            <div class="compare-metric-label">Analysis coverage</div>
+            <div class="compare-metric-value" id="compareAnalysisCoverage">-</div>
+          </div>
+          <div class="compare-summary-card">
+            <div class="compare-metric-label">Avg relevance</div>
+            <div class="compare-metric-value" id="compareAvgRelevance">-</div>
+          </div>
+          <div class="compare-summary-card">
+            <div class="compare-metric-label">Avg matches</div>
+            <div class="compare-metric-value" id="compareAvgMatches">-</div>
+          </div>
+          <div class="compare-summary-card">
+            <div class="compare-metric-label">Avg answer length</div>
+            <div class="compare-metric-value" id="compareAvgAnswerLength">-</div>
+          </div>
+          <div class="compare-summary-card">
+            <div class="compare-metric-label">Avg total time</div>
+            <div class="compare-metric-value" id="compareAvgTotalTime">-</div>
+          </div>
+        </div>
+
+        <div class="compare-wide" id="compareWide">
+          <div class="compare-wide-section compare-totals">
+            <div class="compare-wide-header">
+              <div class="compare-label">Totals comparison</div>
+              <div class="compare-wide-meta" id="compareTotalsMeta">-</div>
+            </div>
+            <div class="compare-totals-grid" id="compareTotalsGrid"></div>
+          </div>
+          <div class="compare-wide-section">
+            <div class="compare-wide-header">
+              <div class="compare-label">Answer side by side</div>
+              <div class="compare-wide-meta" id="compareAnswerMeta">-</div>
+            </div>
+            <div class="compare-wide-grid compare-answer-grid" id="compareAnswerGrid"></div>
+          </div>
+          <div class="compare-wide-section compare-distribution">
+            <div class="compare-wide-header compare-distribution-header">
+              <div class="compare-wide-title-block">
+                <div class="compare-label">Relevance distribution (per 100)</div>
+                <div class="compare-wide-meta" id="compareDistributionMeta">-</div>
+              </div>
+            </div>
+            <div class="compare-threshold-grid" id="compareDistributionThresholds"></div>
+            <div class="compare-distribution-grid" id="compareDistributionGrid"></div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <script src="compare.js" defer></script>
+  </body>
+</html>

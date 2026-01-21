@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LoRA Analyse</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="analysis-page">
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-title">LoRA Analyse</div>
+          <div class="brand-sub">Batch relevance review for stored questions</div>
+        </div>
+        <nav class="nav-links">
+          <a class="nav-link" href="/">Search</a>
+          <a class="nav-link" href="/history.html">History</a>
+          <a class="nav-link active" href="/analyse.html">Analyse</a>
+          <a class="nav-link" href="/compare.html">Compare</a>
+        </nav>
+        <div class="status" id="status">Idle</div>
+      </header>
+
+      <section class="panel analysis-controls">
+        <div class="panel-title">Analysis settings</div>
+        <div class="panel-sub">Pick a model, then analyse any question below.</div>
+        <div class="analysis-control-grid">
+          <label class="control">
+            <span>Rows</span>
+            <input id="analysisLimit" type="number" min="1" step="1" />
+          </label>
+          <label class="control">
+            <span>Search</span>
+            <input id="analysisSearch" type="search" placeholder="Search questions..." />
+          </label>
+          <label class="control">
+            <span>Top K</span>
+            <input id="analysisTopK" type="number" min="1" step="1" />
+          </label>
+          <label class="control">
+            <span>Collection</span>
+            <select id="analysisCollectionFilter"></select>
+          </label>
+          <label class="control">
+            <span>LLM provider</span>
+            <select id="chatProviderSelect"></select>
+          </label>
+          <label class="control">
+            <span>LLM model</span>
+            <select id="chatModelSelect"></select>
+          </label>
+        </div>
+        <div class="analysis-actions">
+          <div class="analysis-action-buttons">
+            <button class="btn ghost" id="refreshAnalysis">Refresh list</button>
+            <button class="btn primary" id="analyseAllButton">Analyse all</button>
+          </div>
+          <div class="analysis-summary">
+            Showing <strong id="analysisShown">0</strong> of
+            <strong id="analysisTotal">0</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel analysis-panel">
+        <div class="analysis-layout">
+          <div class="analysis-list" id="analysisList"></div>
+          <div class="analysis-detail">
+            <div class="analysis-detail-header">
+              <div>
+                <div class="analysis-title">Selected question</div>
+                <div class="analysis-meta" id="analysisMeta">No question selected.</div>
+              </div>
+              <button class="btn primary" id="analyseButton" disabled>Analyse</button>
+            </div>
+
+            <div class="analysis-block card">
+              <div class="analysis-label">Question</div>
+              <div class="analysis-text" id="analysisQuestion">-</div>
+            </div>
+            <div class="analysis-block card">
+              <div class="analysis-label">Retrieval query</div>
+              <div class="analysis-text" id="analysisQuery">-</div>
+            </div>
+            <div class="analysis-block card">
+              <div class="analysis-label">Config</div>
+              <div class="analysis-text" id="analysisConfig">-</div>
+            </div>
+
+            <div class="analysis-block card">
+              <div class="analysis-block-header">
+                <div class="analysis-label">Latest analysis</div>
+              </div>
+              <div class="analysis-result-grid">
+                <div class="analysis-result-item">
+                  <span>Matches</span>
+                  <strong id="analysisMatches">0</strong>
+                </div>
+                <div class="analysis-result-item">
+                  <span>Relevant</span>
+                  <strong id="analysisRelevant">0</strong>
+                </div>
+                <div class="analysis-result-item">
+                  <span>Irrelevant</span>
+                  <strong id="analysisIrrelevant">0</strong>
+                </div>
+              </div>
+              <div class="analysis-file" id="analysisFile">File: -</div>
+              <div class="analysis-status" id="analysisStatus">Ready.</div>
+            </div>
+            <div class="analysis-block card">
+              <div class="analysis-block-header">
+                <div class="analysis-label">Per 100 breakdown</div>
+              </div>
+              <div class="analysis-groups" id="analysisGroups"></div>
+            </div>
+            <div class="analysis-block card">
+              <div class="analysis-block-header">
+                <div class="analysis-label">Group details</div>
+                <select class="analysis-select" id="analysisGroupSelect"></select>
+              </div>
+              <div class="analysis-group-detail">
+                <div class="analysis-split">
+                  <div class="analysis-split-header">
+                    <span>Relevant action points</span>
+                    <span class="analysis-count" id="analysisRelevantCount">0</span>
+                  </div>
+                  <div class="analysis-split-body" id="analysisRelevantList"></div>
+                </div>
+                <div class="analysis-split">
+                  <div class="analysis-split-header">
+                    <span>Irrelevant action points</span>
+                    <span class="analysis-count" id="analysisIrrelevantCount">0</span>
+                  </div>
+                  <div class="analysis-split-body" id="analysisIrrelevantList"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="loading-overlay" id="loadingOverlay" aria-hidden="true">
+      <div class="loading-card" role="status" aria-live="polite">
+        <div class="loading-spinner" aria-hidden="true"></div>
+        <div class="loading-title" id="loadingTitle">Analysing</div>
+        <div class="loading-sub" id="loadingSub">Classifying relevance in batches.</div>
+        <div class="loading-progress">
+          <div class="loading-progress-row" id="loadingProgressCounts">To analyse: 0 / 0</div>
+          <div class="loading-progress-row" id="loadingProgressFound">Already analysed: 0 / 0</div>
+          <div class="loading-progress-row" id="loadingProgressCurrent">Current: -</div>
+          <div class="loading-progress-row" id="loadingProgressAvg">Avg per record: -</div>
+        </div>
+      </div>
+    </div>
+
+    <script src="analyse.js" defer></script>
+  </body>
+</html>

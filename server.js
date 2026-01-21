@@ -120,6 +120,8 @@ const config = {
 
 const NO_MATCH_RESPONSE = "No relevant action points found.";
 const MATCH_PAYLOAD_FIELDS = ["action_point", "action_id", "circular_name"];
+const ANALYSIS_BATCH_SIZE = 50;
+const ANALYSIS_GROUP_SIZE = 100;
 
 function logLine(message) {
   const timestamp = new Date().toISOString();
@@ -210,6 +212,32 @@ function readHistory(limit) {
   }
   items.reverse();
   return { items, total };
+}
+
+function findHistoryRecord(recordId) {
+  if (!recordId) {
+    return null;
+  }
+  if (!fs.existsSync(HISTORY_PATH)) {
+    return null;
+  }
+  const content = fs.readFileSync(HISTORY_PATH, "utf8");
+  const lines = content.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i];
+    try {
+      const record = JSON.parse(line);
+      const ids = [record.record_id, record.id, record.request_id]
+        .filter(Boolean)
+        .map((value) => String(value));
+      if (ids.includes(String(recordId))) {
+        return record;
+      }
+    } catch (err) {
+      continue;
+    }
+  }
+  return null;
 }
 
 function parseJsonBody(req) {
@@ -611,6 +639,96 @@ function buildChatMessages(question, matches) {
   ];
 }
 
+function buildAnalysisMessages(question, matches) {
+  const systemPrompt =
+    "You identify which action points are relevant to the question. " +
+    "Return ONLY valid JSON with a single key 'relevant_indices' containing an array " +
+    "of 1-based indices for relevant items. Use the same numbering shown in the list.";
+  const lines = matches.map((match, index) => {
+    const suffix = match.circular_name ? ` (Circular: ${match.circular_name})` : "";
+    return `${index + 1}. ${match.action_point}${suffix}`;
+  });
+  const userPrompt = [
+    `Question: ${question}`,
+    "",
+    "Action points:",
+    ...lines,
+    "",
+    "Return JSON: {\"relevant_indices\": [1, 5, 9]}",
+  ].join("\n");
+  return [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userPrompt },
+  ];
+}
+
+function chunkArray(items, size) {
+  if (!items || size <= 0) {
+    return [];
+  }
+  const chunks = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+function extractJsonObject(text) {
+  if (!text) {
+    return "";
+  }
+  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenceMatch) {
+    return fenceMatch[1].trim();
+  }
+  const firstBrace = text.indexOf("{");
+  const lastBrace = text.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    return text.slice(firstBrace, lastBrace + 1).trim();
+  }
+  return text.trim();
+}
+
+function parseRelevantIndices(raw, expectedCount) {
+  const extracted = extractJsonObject(raw);
+  let payload = null;
+  try {
+    payload = JSON.parse(extracted);
+  } catch (err) {
+    throw new Error("LLM response is not valid JSON.");
+  }
+  const rawIndices =
+    (payload && payload.relevant_indices) ||
+    (payload && payload.relevantIndexes) ||
+    (payload && payload.relevant) ||
+    (payload && payload.indices) ||
+    payload;
+  if (!Array.isArray(rawIndices)) {
+    throw new Error("LLM response does not contain a relevant_indices array.");
+  }
+  const numeric = rawIndices
+    .map((entry) => {
+      if (typeof entry === "number") {
+        return entry;
+      }
+      const parsed = Number(String(entry).trim());
+      return Number.isFinite(parsed) ? parsed : null;
+    })
+    .filter((value) => Number.isFinite(value));
+
+  const hasZero = numeric.some((value) => value === 0);
+  const indices = hasZero ? numeric.map((value) => value + 1) : numeric;
+
+  const valid = new Set();
+  indices.forEach((value) => {
+    const rounded = Math.round(value);
+    if (rounded >= 1 && rounded <= expectedCount) {
+      valid.add(rounded);
+    }
+  });
+  return valid;
+}
+
 function extractCircularName(payload) {
   const raw =
     payload.circular_name ||
@@ -621,6 +739,137 @@ function extractCircularName(payload) {
     "";
   const text = String(raw || "").trim();
   return text || null;
+}
+
+function buildAnalysisFilePath(recordId) {
+  const safeId = String(recordId || "analysis")
+    .replace(/[^a-zA-Z0-9_-]/g, "_")
+    .slice(0, 64);
+  return path.join(__dirname, "analysis", `analysis_${safeId}.jsonl`);
+}
+
+function cleanupAnalysisArtifacts(recordId, keepPath) {
+  const safeId = String(recordId || "analysis")
+    .replace(/[^a-zA-Z0-9_-]/g, "_")
+    .slice(0, 64);
+  const dir = path.join(__dirname, "analysis");
+  if (!fs.existsSync(dir)) {
+    return;
+  }
+  const prefix = `analysis_${safeId}_`;
+  const files = fs.readdirSync(dir);
+  files.forEach((file) => {
+    if (!file.startsWith(prefix)) {
+      return;
+    }
+    const fullPath = path.join(dir, file);
+    if (keepPath && path.resolve(fullPath) === path.resolve(keepPath)) {
+      return;
+    }
+    try {
+      fs.unlinkSync(fullPath);
+    } catch (err) {
+      logLine(`Failed to remove old analysis file ${file}: ${err.message || err}`);
+    }
+  });
+}
+
+function initAnalysisFile(filePath) {
+  ensureDirectory(filePath);
+  fs.writeFileSync(filePath, "", "utf8");
+}
+
+function writeAnalysisLine(filePath, payload) {
+  ensureDirectory(filePath);
+  fs.appendFileSync(filePath, `${JSON.stringify(payload)}\n`, "utf8");
+}
+
+function readAnalysisSummary(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  const content = fs.readFileSync(filePath, "utf8");
+  const lines = content.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  if (!lines.length) {
+    return null;
+  }
+  let meta = null;
+  let summary = null;
+  let relevantCount = 0;
+  let irrelevantCount = 0;
+  const groups = [];
+  const groupDetails = [];
+  for (const line of lines) {
+    try {
+      const payload = JSON.parse(line);
+      if (payload && payload.summary) {
+        summary = payload;
+      }
+      if (!meta && payload && payload.match_count !== undefined && payload.question) {
+        meta = payload;
+      }
+      if (
+        payload &&
+        payload.relevant_count !== undefined &&
+        payload.irrelevant_count !== undefined &&
+        payload.group_index !== undefined
+      ) {
+        const groupSummary = {
+          group_index: Number(payload.group_index || 0),
+          start_index: Number(payload.start_index || 0),
+          end_index: Number(payload.end_index || 0),
+          relevant_count: Number(payload.relevant_count || 0),
+          irrelevant_count: Number(payload.irrelevant_count || 0),
+        };
+        groups.push(groupSummary);
+        relevantCount += groupSummary.relevant_count;
+        irrelevantCount += groupSummary.irrelevant_count;
+        groupDetails.push({
+          group_index: groupSummary.group_index,
+          start_index: groupSummary.start_index,
+          end_index: groupSummary.end_index,
+          relevant: Array.isArray(payload.relevant) ? payload.relevant : [],
+          irrelevant: Array.isArray(payload.irrelevant) ? payload.irrelevant : [],
+        });
+      }
+    } catch (err) {
+      continue;
+    }
+  }
+  const orderedGroups = groups.sort((a, b) => a.group_index - b.group_index);
+  const orderedDetails = groupDetails.sort((a, b) => a.group_index - b.group_index);
+  if (summary) {
+    return {
+      analysis_id: summary.analysis_id || (meta ? meta.analysis_id : ""),
+      record_id: summary.record_id || (meta ? meta.record_id : ""),
+      match_count:
+        summary.match_count !== undefined
+          ? Number(summary.match_count)
+          : Number(summary.relevant_count || 0) + Number(summary.irrelevant_count || 0),
+      relevant_count: Number(summary.relevant_count || 0),
+      irrelevant_count: Number(summary.irrelevant_count || 0),
+      llm: summary.llm || (meta ? meta.llm : null),
+      groups: orderedGroups,
+      group_details: orderedDetails,
+    };
+  }
+  if (!meta && !orderedGroups.length) {
+    return null;
+  }
+  const matchCount =
+    meta && meta.match_count !== undefined
+      ? Number(meta.match_count || 0)
+      : relevantCount + irrelevantCount;
+  return {
+    analysis_id: meta ? meta.analysis_id : "",
+    record_id: meta ? meta.record_id : "",
+    match_count: matchCount,
+    relevant_count: relevantCount,
+    irrelevant_count: irrelevantCount,
+    llm: meta ? meta.llm || null : null,
+    groups: orderedGroups,
+    group_details: orderedDetails,
+  };
 }
 
 function mapMatches(results, threshold) {
@@ -745,6 +994,146 @@ async function reframeQuestion(question, incorrect, missing, provider, chatModel
   return content || question;
 }
 
+async function classifyMatches(question, matches, provider, chatModel) {
+  const batches = chunkArray(matches, ANALYSIS_BATCH_SIZE);
+  const labels = [];
+  for (const batch of batches) {
+    const messages = buildAnalysisMessages(question, batch);
+    const response = await requestChat(provider, chatModel, messages, { temperature: 0.0 });
+    const relevantSet = parseRelevantIndices(response, batch.length);
+    for (let i = 0; i < batch.length; i += 1) {
+      labels.push(relevantSet.has(i + 1) ? "relevant" : "irrelevant");
+    }
+  }
+  return labels;
+}
+
+async function runAnalysis(record, provider, chatModel, topK, analysisPath) {
+  const analysisId = createRequestId();
+  const recordId = record.record_id || record.id || record.request_id || analysisId;
+  const question = record.question || record.retrieval_query || "";
+  const retrievalQuery =
+    record.retrieval_query || record.reframed_question || record.question || "";
+  const modelName = record.model || DEFAULT_LORA_MODEL;
+  const collectionName = record.collection || config.qdrantCollection;
+  const searchMode = normalizeSearchMode(record.search_mode || record.searchMode || "");
+  const threshold =
+    typeof record.threshold === "number"
+      ? record.threshold
+      : record.config && record.config.search
+        ? Number(record.config.search.threshold || 0)
+        : 0;
+
+  const matches = await askQdrant(
+    retrievalQuery,
+    topK,
+    threshold,
+    collectionName,
+    modelName,
+    searchMode
+  );
+
+  initAnalysisFile(analysisPath);
+  const meta = {
+    analysis_id: analysisId,
+    record_id: recordId,
+    timestamp: new Date().toISOString(),
+    question,
+    retrieval_query: retrievalQuery,
+    search_mode: searchMode,
+    top_k: topK,
+    threshold,
+    model: modelName,
+    collection: collectionName,
+    llm: {
+      provider: provider.id,
+      model: chatModel,
+    },
+    match_count: matches.length,
+  };
+  writeAnalysisLine(analysisPath, meta);
+
+  const groups = chunkArray(matches, ANALYSIS_GROUP_SIZE);
+  let totalRelevant = 0;
+  let totalIrrelevant = 0;
+  const groupSummaries = [];
+  const groupDetails = [];
+
+  for (let groupIndex = 0; groupIndex < groups.length; groupIndex += 1) {
+    const group = groups[groupIndex];
+    const labels = await classifyMatches(question, group, provider, chatModel);
+    const relevant = [];
+    const irrelevant = [];
+    labels.forEach((label, idx) => {
+      const match = group[idx];
+      const item = {
+        action_point: match.action_point,
+        circular_name: match.circular_name,
+      };
+      if (label === "relevant") {
+        relevant.push(item);
+      } else {
+        irrelevant.push(item);
+      }
+    });
+    totalRelevant += relevant.length;
+    totalIrrelevant += irrelevant.length;
+
+    const groupSummary = {
+      group_index: groupIndex,
+      start_index: groupIndex * ANALYSIS_GROUP_SIZE,
+      end_index: groupIndex * ANALYSIS_GROUP_SIZE + group.length - 1,
+      relevant_count: relevant.length,
+      irrelevant_count: irrelevant.length,
+    };
+    groupSummaries.push(groupSummary);
+    groupDetails.push({
+      group_index: groupSummary.group_index,
+      start_index: groupSummary.start_index,
+      end_index: groupSummary.end_index,
+      relevant,
+      irrelevant,
+    });
+
+    writeAnalysisLine(analysisPath, {
+      analysis_id: analysisId,
+      group_index: groupSummary.group_index,
+      start_index: groupSummary.start_index,
+      end_index: groupSummary.end_index,
+      source_count: group.length,
+      relevant_count: groupSummary.relevant_count,
+      irrelevant_count: groupSummary.irrelevant_count,
+      relevant,
+      irrelevant,
+    });
+  }
+
+  writeAnalysisLine(analysisPath, {
+    analysis_id: analysisId,
+    record_id: recordId,
+    summary: true,
+    match_count: matches.length,
+    relevant_count: totalRelevant,
+    irrelevant_count: totalIrrelevant,
+    completed_at: new Date().toISOString(),
+    llm: {
+      provider: provider.id,
+      model: chatModel,
+    },
+  });
+
+  return {
+    analysis_id: analysisId,
+    record_id: recordId,
+    file: path.relative(__dirname, analysisPath),
+    match_count: matches.length,
+    relevant_count: totalRelevant,
+    irrelevant_count: totalIrrelevant,
+    groups: groupSummaries,
+    group_details: groupDetails,
+  };
+}
+
 function sendJson(res, statusCode, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(statusCode, {
@@ -760,9 +1149,15 @@ function serveStatic(req, res) {
     "/index.html": "index.html",
     "/history": "history.html",
     "/history.html": "history.html",
+    "/analyse": "analyse.html",
+    "/analyse.html": "analyse.html",
+    "/compare": "compare.html",
+    "/compare.html": "compare.html",
     "/styles.css": "styles.css",
     "/app.js": "app.js",
     "/history.js": "history.js",
+    "/analyse.js": "analyse.js",
+    "/compare.js": "compare.js",
   };
   const pathname = new URL(req.url, "http://localhost").pathname;
   const fileName = fileMap[pathname];
@@ -1108,6 +1503,66 @@ const server = http.createServer(async (req, res) => {
     } catch (err) {
       sendJson(res, 500, { error: err.message || "Server error." });
       logLine(`POST /api/reframe error: ${err.message}`);
+    }
+    return;
+  }
+
+  if (req.method === "POST" && req.url.startsWith("/api/analyse")) {
+    try {
+      const payload = await parseJsonBody(req);
+      const recordId = String(payload.record_id || payload.recordId || "").trim();
+      if (!recordId) {
+        sendJson(res, 400, { error: "record_id is required." });
+        return;
+      }
+      const requestedTopK = Number(payload.topK || payload.top_k || 1000);
+      const topK = Math.max(1, requestedTopK);
+      const cacheOnly = Boolean(payload.cache_only || payload.cacheOnly);
+      const requestedChatProvider =
+        payload.chat_provider || payload.chatProvider || "";
+      const requestedChatModel = payload.chat_model || payload.chatModel || "";
+      const record = findHistoryRecord(recordId);
+      if (!record) {
+        sendJson(res, 404, { error: "Record not found." });
+        return;
+      }
+      const analysisPath = buildAnalysisFilePath(recordId);
+      cleanupAnalysisArtifacts(recordId, analysisPath);
+      const cachedSummary = readAnalysisSummary(analysisPath);
+      if (cachedSummary) {
+        sendJson(res, 200, {
+          ...cachedSummary,
+          file: path.relative(__dirname, analysisPath),
+          cached: true,
+        });
+        logLine(`POST /api/analyse cache hit record_id=${recordId}`);
+        return;
+      }
+      if (cacheOnly) {
+        sendJson(res, 404, { error: "No cached analysis.", cached: false });
+        logLine(`POST /api/analyse cache miss record_id=${recordId}`);
+        return;
+      }
+      const chatProvider = resolveChatProvider(requestedChatProvider);
+      const chatModel = resolveChatModel(chatProvider, requestedChatModel);
+
+      logLine(
+        `POST /api/analyse record_id=${recordId} topK=${topK} chat_provider=${chatProvider.id} chat_model=${chatModel}`
+      );
+      const result = await runAnalysis(
+        record,
+        chatProvider,
+        chatModel,
+        topK,
+        analysisPath
+      );
+      sendJson(res, 200, { ...result, cached: false });
+      logLine(
+        `POST /api/analyse done record_id=${recordId} matches=${result.match_count}`
+      );
+    } catch (err) {
+      sendJson(res, 500, { error: err.message || "Server error." });
+      logLine(`POST /api/analyse error: ${err.message}`);
     }
     return;
   }

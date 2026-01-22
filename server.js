@@ -120,7 +120,7 @@ const config = {
 
 const NO_MATCH_RESPONSE = "No relevant action points found.";
 const MATCH_PAYLOAD_FIELDS = ["action_point", "action_id", "circular_name"];
-const ANALYSIS_BATCH_SIZE = 50;
+const ANALYSIS_BATCH_SIZE = 25;
 const ANALYSIS_GROUP_SIZE = 100;
 
 function logLine(message) {
@@ -640,27 +640,38 @@ function buildChatMessages(question, matches) {
 }
 
 function buildAnalysisMessages(question, matches) {
+  const N = matches.length;
+
   const systemPrompt =
-    "You identify which action points are relevant to the question. " +
-    "Return ONLY valid JSON with a single key 'relevant_indices' containing an array " +
-    "of 1-based indices for relevant items. Use the same numbering shown in the list.";
+    "You identify which action points are relevant to the question.\n" +
+    `You MUST return ONLY valid JSON with exactly one key "relevant_indices".\n` +
+    `Rules:\n` +
+    `- "relevant_indices" must be an array of integers.\n` +
+    `- Indices are 1-based and MUST be in the range [1, ${N}].\n` +
+    `- Indices MUST be unique and sorted in ascending order.\n` +
+    `- If none are relevant, return: {"relevant_indices": []}.\n` +
+    `- Output ONLY the JSON object (no markdown, no code fences, no extra keys, no explanation).`;
+
   const lines = matches.map((match, index) => {
     const suffix = match.circular_name ? ` (Circular: ${match.circular_name})` : "";
     return `${index + 1}. ${match.action_point}${suffix}`;
   });
+
   const userPrompt = [
     `Question: ${question}`,
     "",
-    "Action points:",
+    `Action points (1..${N}):`,
     ...lines,
     "",
-    "Return JSON: {\"relevant_indices\": [1, 5, 9]}",
+    `Return JSON only. Example: {"relevant_indices":[1,5,9]}`,
   ].join("\n");
+
   return [
     { role: "system", content: systemPrompt },
     { role: "user", content: userPrompt },
   ];
 }
+
 
 function chunkArray(items, size) {
   if (!items || size <= 0) {

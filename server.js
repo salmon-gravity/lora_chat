@@ -98,8 +98,11 @@ const config = {
   qdrantCollection:
     process.env.LoRA_Embedding_QDRANT_COLLECTION ||
     "LoRA_epoch_11_75k_data_embeddings",
-  compareCollection:
-    process.env.COMPARE_COLLECTION || "hybrid_with_circular_name_lora",
+  compareCollectionLora:
+    process.env.COMPARE_COLLECTION_LORA || "hybrid_with_circular_name_lora",
+  compareCollectionOllama:
+    process.env.COMPARE_COLLECTION_OLLAMA ||
+    "hybrid_with_circular_name_ollama_custom_model",
   searchModeDefault: String(process.env.SEARCH_MODE || "dense").toLowerCase(),
   hybridDenseName: process.env.QDRANT_DENSE_VECTOR_NAME || "dense",
   hybridSparseName: process.env.QDRANT_SPARSE_VECTOR_NAME || "bm25",
@@ -1813,14 +1816,17 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const topK = Math.max(1, Number(payload.topK || 100));
-      const collectionName = payload.collection
-        ? String(payload.collection).trim()
-        : config.compareCollection;
+      const loraCollection = payload.lora_collection
+        ? String(payload.lora_collection).trim()
+        : config.compareCollectionLora;
+      const ollamaCollection = payload.ollama_collection
+        ? String(payload.ollama_collection).trim()
+        : config.compareCollectionOllama;
       const requestedModel = payload.model ? String(payload.model).trim() : "";
       const modelName = resolveModelName(requestedModel);
 
       logLine(
-        `POST /api/compare-embeddings model=${modelName} collection=${collectionName} topK=${topK}`
+        `POST /api/compare-embeddings model=${modelName} lora=${loraCollection} ollama=${ollamaCollection} topK=${topK}`
       );
 
       const [loraEmbedding, ollamaEmbedding] = await Promise.all([
@@ -1829,8 +1835,8 @@ const server = http.createServer(async (req, res) => {
       ]);
 
       const [loraMatches, ollamaMatches] = await Promise.all([
-        queryQdrantByVector(loraEmbedding, topK, collectionName),
-        queryQdrantByVector(ollamaEmbedding, topK, collectionName),
+        queryQdrantByVector(loraEmbedding, topK, loraCollection),
+        queryQdrantByVector(ollamaEmbedding, topK, ollamaCollection),
       ]);
 
       const comparison = compareMatchSets(loraMatches, ollamaMatches);
@@ -1846,7 +1852,10 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, {
         question,
         top_k: topK,
-        collection: collectionName,
+        collections: {
+          lora: loraCollection,
+          ollama: ollamaCollection,
+        },
         lora: {
           model: modelName,
           matches: loraMatches,

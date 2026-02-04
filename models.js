@@ -20,13 +20,16 @@ const elements = {
   metricOllamaLen: document.getElementById("metricOllamaLen"),
   metricLoraMean: document.getElementById("metricLoraMean"),
   metricOllamaMean: document.getElementById("metricOllamaMean"),
+  modelsCollection: document.getElementById("modelsCollection"),
+  modelsTopK: document.getElementById("modelsTopK"),
   loadingOverlay: document.getElementById("modelsLoadingOverlay"),
   loadingTitle: document.getElementById("modelsLoadingTitle"),
   loadingSub: document.getElementById("modelsLoadingSub"),
 };
 
 const COMPARE_TOP_K = 100;
-const COMPARE_COLLECTION = "hybrid_with_circular_name_lora";
+const COMPARE_COLLECTION_LORA = "hybrid_with_circular_name_lora";
+const COMPARE_COLLECTION_OLLAMA = "hybrid_with_circular_name_ollama_custom_model";
 
 function escapeHtml(text) {
   return String(text)
@@ -44,6 +47,18 @@ function inlineFormat(text) {
 function setStatus(message) {
   if (elements.status) {
     elements.status.textContent = message;
+  }
+}
+
+function syncCollectionLabel(payload) {
+  const collections = (payload && payload.collections) || {};
+  const loraLabel = collections.lora || COMPARE_COLLECTION_LORA;
+  const ollamaLabel = collections.ollama || COMPARE_COLLECTION_OLLAMA;
+  if (elements.modelsCollection) {
+    elements.modelsCollection.textContent = `${loraLabel} (LoRA) / ${ollamaLabel} (Ollama)`;
+  }
+  if (elements.modelsTopK) {
+    elements.modelsTopK.textContent = String(COMPARE_TOP_K);
   }
 }
 
@@ -132,6 +147,7 @@ function updateMetrics(payload) {
 }
 
 function renderResults(payload) {
+  syncCollectionLabel(payload);
   updateMetrics(payload);
 
   renderCompareTable(elements.overlap, payload.overlap || [], [
@@ -202,7 +218,8 @@ async function runComparison() {
       body: JSON.stringify({
         question,
         topK: COMPARE_TOP_K,
-        collection: COMPARE_COLLECTION,
+        lora_collection: COMPARE_COLLECTION_LORA,
+        ollama_collection: COMPARE_COLLECTION_OLLAMA,
       }),
     });
     const rawText = await response.text();
@@ -234,6 +251,10 @@ function clearResults() {
     only_ollama: [],
     lora: { matches: [] },
     ollama: { matches: [] },
+    collections: {
+      lora: COMPARE_COLLECTION_LORA,
+      ollama: COMPARE_COLLECTION_OLLAMA,
+    },
     stats: {},
     embedding_analysis: {},
   });
@@ -242,6 +263,12 @@ function clearResults() {
 }
 
 function init() {
+  syncCollectionLabel({
+    collections: {
+      lora: COMPARE_COLLECTION_LORA,
+      ollama: COMPARE_COLLECTION_OLLAMA,
+    },
+  });
   clearResults();
   if (elements.compareButton) {
     elements.compareButton.addEventListener("click", runComparison);

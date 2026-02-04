@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LoRA Insights</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="insights-page">
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-title">LoRA Insights</div>
+          <div class="brand-sub">Compare retrieval configurations using analysed relevance</div>
+        </div>
+        <nav class="nav-links">
+          <a class="nav-link" href="/">Search</a>
+          <a class="nav-link" href="/history.html">History</a>
+          <a class="nav-link" href="/analyse.html">Analyse</a>
+          <a class="nav-link active" href="/insights.html">Insights</a>
+          <a class="nav-link" href="/compare.html">Compare</a>
+          <a class="nav-link" href="/models.html">Models</a>
+        </nav>
+        <div class="status" id="status">Idle</div>
+      </header>
+
+      <section class="panel insights-controls">
+        <details class="insights-collapsible" open>
+          <summary>
+            <span class="panel-title">Insights filters</span>
+          </summary>
+          <div class="panel-sub">
+            Filter analysed questions, then pick a configuration to review performance.
+          </div>
+          <div class="insights-control-grid">
+            <label class="control">
+              <span>Search</span>
+              <input id="insightsSearch" type="search" placeholder="Search questions..." />
+            </label>
+            <label class="control">
+              <span>Mode</span>
+              <select id="insightsMode"></select>
+            </label>
+            <label class="control">
+              <span>Collection</span>
+              <select id="insightsCollection"></select>
+            </label>
+            <label class="control">
+              <span>Embedding model</span>
+              <select id="insightsModel"></select>
+            </label>
+            <label class="control">
+              <span>Top K</span>
+              <select id="insightsTopK"></select>
+            </label>
+            <label class="control">
+              <span>Threshold</span>
+              <select id="insightsThreshold"></select>
+            </label>
+          </div>
+          <div class="insights-actions">
+            <button class="btn ghost" id="refreshInsights">Refresh</button>
+            <div class="insights-summary">
+              Configs <strong id="insightsConfigCount">0</strong> | Analysed
+              <strong id="insightsRecordCount">0</strong> /
+              <strong id="insightsHistoryCount">0</strong>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <section class="panel insights-panel">
+        <div class="insights-layout">
+          <div class="insights-list" id="insightsConfigList"></div>
+          <div class="insights-detail">
+            <div class="insights-detail-header">
+              <div>
+                <div class="insights-title">Selected configuration</div>
+                <div class="insights-meta" id="insightsConfigMeta">Select a configuration.</div>
+              </div>
+              <div class="insights-detail-actions">
+                <label class="control insights-inline-control">
+                  <span>Question sort</span>
+                  <select id="insightsQuestionSort">
+                    <option value="ratio_desc">Relevance ratio (high)</option>
+                    <option value="ratio_asc">Relevance ratio (low)</option>
+                    <option value="relevant_desc">Most relevant</option>
+                    <option value="relevant_asc">Least relevant</option>
+                    <option value="matches_desc">Most matches</option>
+                    <option value="matches_asc">Least matches</option>
+                    <option value="time_desc">Newest first</option>
+                    <option value="time_asc">Oldest first</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            <div class="insights-metric-grid" id="insightsMetricGrid"></div>
+
+            <div class="insights-block">
+              <div class="insights-block-header">
+                <div class="insights-label">Relevance distribution (per 100)</div>
+                <div class="insights-sub" id="insightsDistMeta">-</div>
+              </div>
+              <div class="insights-dist-grid" id="insightsDistGrid"></div>
+            </div>
+
+            <div class="insights-block">
+              <div class="insights-block-header">
+                <div class="insights-label">Question breakdown</div>
+                <div class="insights-sub" id="insightsQuestionMeta">-</div>
+              </div>
+              <div class="insights-question-list" id="insightsQuestionList"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <script src="insights.js" defer></script>
+  </body>
+</html>

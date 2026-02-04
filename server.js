@@ -98,6 +98,8 @@ const config = {
   qdrantCollection:
     process.env.LoRA_Embedding_QDRANT_COLLECTION ||
     "LoRA_epoch_11_75k_data_embeddings",
+  compareCollection:
+    process.env.COMPARE_COLLECTION || "hybrid_with_circular_name_lora",
   searchModeDefault: String(process.env.SEARCH_MODE || "dense").toLowerCase(),
   hybridDenseName: process.env.QDRANT_DENSE_VECTOR_NAME || "dense",
   hybridSparseName: process.env.QDRANT_SPARSE_VECTOR_NAME || "bm25",
@@ -116,6 +118,9 @@ const config = {
   chatTemperature: Number(process.env.GPT_OSS_TEMPERATURE || 0.0),
   chatTimeoutMs: Number(process.env.GPT_OSS_TIMEOUT || 300000),
   pythonBin: process.env.PYTHON_BIN || "python",
+  ollamaEmbedUrl:
+    process.env.OLLAMA_EMBED_URL || "http://ollama.gravity.ind.in:11434/api/embed",
+  ollamaEmbedModel: process.env.OLLAMA_EMBED_MODEL || "gravity-nomic-embedder",
 };
 
 const NO_MATCH_RESPONSE = "No relevant action points found.";
@@ -212,6 +217,23 @@ function readHistory(limit) {
   }
   items.reverse();
   return { items, total };
+}
+
+function readHistoryAll() {
+  if (!fs.existsSync(HISTORY_PATH)) {
+    return [];
+  }
+  const content = fs.readFileSync(HISTORY_PATH, "utf8");
+  const lines = content.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  const items = [];
+  for (const line of lines) {
+    try {
+      items.push(JSON.parse(line));
+    } catch (err) {
+      continue;
+    }
+  }
+  return items;
 }
 
 function findHistoryRecord(recordId) {
@@ -327,6 +349,58 @@ function normalizeSearchMode(value) {
   }
   const fallback = String(config.searchModeDefault || "dense").toLowerCase();
   return fallback === "hybrid" ? "hybrid" : "dense";
+}
+
+function pickNumber(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function getRecordTopK(record) {
+  if (!record) {
+    return null;
+  }
+  return (
+    pickNumber(record.top_k) ??
+    pickNumber(record.topK) ??
+    pickNumber(record.config && record.config.search && record.config.search.top_k) ??
+    null
+  );
+}
+
+function getRecordThreshold(record) {
+  if (!record) {
+    return null;
+  }
+  return (
+    pickNumber(record.threshold) ??
+    pickNumber(record.config && record.config.search && record.config.search.threshold) ??
+    null
+  );
+}
+
+function getRecordModel(record) {
+  if (!record) {
+    return "";
+  }
+  const raw =
+    record.model ||
+    (record.config && record.config.embedding
+      ? record.config.embedding.lora_model || record.config.embedding.model
+      : "") ||
+    "";
+  return String(raw || "").trim();
+}
+
+function getRecordCollection(record) {
+  if (!record) {
+    return "";
+  }
+  const raw =
+    record.collection ||
+    (record.config && record.config.search ? record.config.search.collection : "") ||
+    "";
+  return String(raw || "").trim();
 }
 
 function normalizeQdrantResults(response) {
@@ -617,13 +691,34 @@ function embedQuestion(question, modelName) {
   });
 }
 
+async function embedWithOllama(text) {
+  const payload = {
+    model: config.ollamaEmbedModel,
+    input: [text],
+    stream: false,
+  };
+  const response = await requestJson(
+    config.ollamaEmbedUrl,
+    "POST",
+    payload,
+    null,
+    300000
+  );
+  const embeddings = response && response.embeddings;
+  if (!Array.isArray(embeddings) || !embeddings.length) {
+    throw new Error("Missing embeddings from Ollama response.");
+  }
+  return embeddings[0];
+}
+
 function buildChatMessages(question, matches) {
   const systemPrompt =
     "You answer questions using only the provided action points. " +
     "If the action points are missing or do not answer the question, " +
     `respond with exactly: "${NO_MATCH_RESPONSE}". ` +
-    "If circular references are provided, include a short References section listing " +
-    "the circular names you used. Do not mention action ids, indices, or similarity scores.";
+    "If circular references are provided, include them ONLY as a markdown table " +
+    'with a single column header "Reference Circulars" and one circular name per row. ' +
+    "Do not add any non-table reference section. Do not mention action ids, indices, or similarity scores.";
   const lines = matches.length
     ? matches.map((match) => {
         if (match.circular_name) {
@@ -883,6 +978,90 @@ function readAnalysisSummary(filePath) {
   };
 }
 
+function readAnalysisSummaryWithMeta(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  const content = fs.readFileSync(filePath, "utf8");
+  const lines = content.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  if (!lines.length) {
+    return null;
+  }
+  let meta = null;
+  let summary = null;
+  let relevantCount = 0;
+  let irrelevantCount = 0;
+  const groups = [];
+  for (const line of lines) {
+    try {
+      const payload = JSON.parse(line);
+      if (payload && payload.summary) {
+        summary = payload;
+      }
+      if (
+        !meta &&
+        payload &&
+        payload.match_count !== undefined &&
+        payload.question !== undefined
+      ) {
+        meta = payload;
+      }
+      if (
+        payload &&
+        payload.relevant_count !== undefined &&
+        payload.irrelevant_count !== undefined &&
+        payload.group_index !== undefined
+      ) {
+        const groupSummary = {
+          group_index: Number(payload.group_index || 0),
+          start_index: Number(payload.start_index || 0),
+          end_index: Number(payload.end_index || 0),
+          relevant_count: Number(payload.relevant_count || 0),
+          irrelevant_count: Number(payload.irrelevant_count || 0),
+        };
+        groups.push(groupSummary);
+        relevantCount += groupSummary.relevant_count;
+        irrelevantCount += groupSummary.irrelevant_count;
+      }
+    } catch (err) {
+      continue;
+    }
+  }
+
+  const orderedGroups = groups.sort((a, b) => a.group_index - b.group_index);
+  const matchCount =
+    summary && summary.match_count !== undefined
+      ? Number(summary.match_count)
+      : meta && meta.match_count !== undefined
+        ? Number(meta.match_count || 0)
+        : relevantCount + irrelevantCount;
+
+  return {
+    analysis_id: (summary && summary.analysis_id) || (meta ? meta.analysis_id : ""),
+    record_id: (summary && summary.record_id) || (meta ? meta.record_id : ""),
+    question: meta ? meta.question || "" : "",
+    retrieval_query: meta ? meta.retrieval_query || "" : "",
+    search_mode: meta ? meta.search_mode || "" : "",
+    top_k: meta && meta.top_k !== undefined ? Number(meta.top_k) : null,
+    threshold: meta && meta.threshold !== undefined ? Number(meta.threshold) : null,
+    model: meta ? meta.model || "" : "",
+    collection: meta ? meta.collection || "" : "",
+    llm: (summary && summary.llm) || (meta ? meta.llm || null : null),
+    timestamp: meta ? meta.timestamp || "" : "",
+    completed_at: summary ? summary.completed_at || "" : "",
+    match_count: matchCount,
+    relevant_count:
+      summary && summary.relevant_count !== undefined
+        ? Number(summary.relevant_count)
+        : relevantCount,
+    irrelevant_count:
+      summary && summary.irrelevant_count !== undefined
+        ? Number(summary.irrelevant_count)
+        : irrelevantCount,
+    groups: orderedGroups,
+  };
+}
+
 function mapMatches(results, threshold) {
   return results
     .map((item) => {
@@ -903,6 +1082,148 @@ function mapMatches(results, threshold) {
       }
       return item.score >= threshold;
     });
+}
+
+async function queryQdrantByVector(vector, topK, collectionName) {
+  if (!config.qdrantHost) throw new Error("Missing QDRANT_HOST.");
+  const targetCollection = collectionName || config.qdrantCollection;
+  const url = buildQdrantUrl(`/collections/${targetCollection}/points/query`);
+  const payload = {
+    query: vector,
+    using: config.hybridDenseName,
+    limit: topK,
+    with_payload: MATCH_PAYLOAD_FIELDS,
+    with_vector: false,
+  };
+  const headers = config.qdrantApiKey ? { "api-key": config.qdrantApiKey } : {};
+  const response = await requestJson(url, "POST", payload, headers, 300000);
+  const results = normalizeQdrantResults(response);
+  return mapMatches(results, null);
+}
+
+function buildMatchKey(item) {
+  if (item.action_id !== null && item.action_id !== undefined && item.action_id !== "") {
+    return `id:${item.action_id}`;
+  }
+  return `ap:${item.action_point}`;
+}
+
+function buildMatchIndex(matches) {
+  const index = new Map();
+  matches.forEach((item, idx) => {
+    const key = buildMatchKey(item);
+    if (!index.has(key)) {
+      index.set(key, { ...item, rank: idx + 1 });
+    }
+  });
+  return index;
+}
+
+function compareMatchSets(loraMatches, ollamaMatches) {
+  const loraIndex = buildMatchIndex(loraMatches);
+  const ollamaIndex = buildMatchIndex(ollamaMatches);
+
+  const overlap = [];
+  const onlyLora = [];
+  const onlyOllama = [];
+
+  loraIndex.forEach((loraItem, key) => {
+    if (ollamaIndex.has(key)) {
+      const other = ollamaIndex.get(key);
+      overlap.push({
+        key,
+        action_id: loraItem.action_id,
+        action_point: loraItem.action_point,
+        circular_name: loraItem.circular_name,
+        lora_rank: loraItem.rank,
+        ollama_rank: other.rank,
+        lora_score: loraItem.score,
+        ollama_score: other.score,
+      });
+    } else {
+      onlyLora.push({
+        key,
+        action_id: loraItem.action_id,
+        action_point: loraItem.action_point,
+        circular_name: loraItem.circular_name,
+        lora_rank: loraItem.rank,
+        lora_score: loraItem.score,
+      });
+    }
+  });
+
+  ollamaIndex.forEach((ollamaItem, key) => {
+    if (!loraIndex.has(key)) {
+      onlyOllama.push({
+        key,
+        action_id: ollamaItem.action_id,
+        action_point: ollamaItem.action_point,
+        circular_name: ollamaItem.circular_name,
+        ollama_rank: ollamaItem.rank,
+        ollama_score: ollamaItem.score,
+      });
+    }
+  });
+
+  overlap.sort((a, b) => a.lora_rank - b.lora_rank);
+  onlyLora.sort((a, b) => a.lora_rank - b.lora_rank);
+  onlyOllama.sort((a, b) => a.ollama_rank - b.ollama_rank);
+
+  return {
+    overlap,
+    only_lora: onlyLora,
+    only_ollama: onlyOllama,
+  };
+}
+
+function vectorCosine(a, b) {
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len; i += 1) {
+    const av = Number(a[i] || 0);
+    const bv = Number(b[i] || 0);
+    dot += av * bv;
+    na += av * av;
+    nb += bv * bv;
+  }
+  if (!na || !nb) return 0;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+function vectorL2(a, b) {
+  const len = Math.min(a.length, b.length);
+  let sum = 0;
+  for (let i = 0; i < len; i += 1) {
+    const diff = Number(a[i] || 0) - Number(b[i] || 0);
+    sum += diff * diff;
+  }
+  return Math.sqrt(sum);
+}
+
+function vectorL1(a, b) {
+  const len = Math.min(a.length, b.length);
+  let sum = 0;
+  for (let i = 0; i < len; i += 1) {
+    const diff = Math.abs(Number(a[i] || 0) - Number(b[i] || 0));
+    sum += diff;
+  }
+  return sum;
+}
+
+function vectorStats(vec) {
+  let min = Infinity;
+  let max = -Infinity;
+  let sum = 0;
+  for (let i = 0; i < vec.length; i += 1) {
+    const v = Number(vec[i] || 0);
+    if (v < min) min = v;
+    if (v > max) max = v;
+    sum += v;
+  }
+  const mean = vec.length ? sum / vec.length : 0;
+  return { min, max, mean, length: vec.length };
 }
 
 async function askQdrantDense(question, topK, threshold, collection, modelName) {
@@ -1162,12 +1483,18 @@ function serveStatic(req, res) {
     "/history.html": "history.html",
     "/analyse": "analyse.html",
     "/analyse.html": "analyse.html",
+    "/insights": "insights.html",
+    "/insights.html": "insights.html",
     "/compare": "compare.html",
     "/compare.html": "compare.html",
+    "/models": "models.html",
+    "/models.html": "models.html",
     "/styles.css": "styles.css",
     "/app.js": "app.js",
+    "/models.js": "models.js",
     "/history.js": "history.js",
     "/analyse.js": "analyse.js",
+    "/insights.js": "insights.js",
     "/compare.js": "compare.js",
   };
   const pathname = new URL(req.url, "http://localhost").pathname;
@@ -1284,6 +1611,69 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "GET" && req.url.startsWith("/api/analysis-insights")) {
+    try {
+      const historyRecords = readHistoryAll();
+      const analysisRecords = [];
+      historyRecords.forEach((record) => {
+        const recordId =
+          record.record_id || record.id || record.request_id || "";
+        if (!recordId) {
+          return;
+        }
+        const analysisPath = buildAnalysisFilePath(recordId);
+        const summary = readAnalysisSummaryWithMeta(analysisPath);
+        if (!summary) {
+          return;
+        }
+        analysisRecords.push({
+          record_id: recordId,
+          type: record.type || "",
+          timestamp: summary.timestamp || record.timestamp || "",
+          question: summary.question || record.question || "",
+          retrieval_query:
+            summary.retrieval_query ||
+            record.retrieval_query ||
+            record.reframed_question ||
+            record.question ||
+            "",
+          search_mode:
+            summary.search_mode ||
+            normalizeSearchMode(record.search_mode || record.searchMode || ""),
+          top_k:
+            summary.top_k !== null && summary.top_k !== undefined
+              ? summary.top_k
+              : getRecordTopK(record),
+          threshold:
+            summary.threshold !== null && summary.threshold !== undefined
+              ? summary.threshold
+              : getRecordThreshold(record),
+          model: summary.model || getRecordModel(record) || "",
+          collection: summary.collection || getRecordCollection(record) || "",
+          llm:
+            summary.llm ||
+            (record.config && record.config.llm ? record.config.llm : null),
+          match_count: summary.match_count,
+          relevant_count: summary.relevant_count,
+          irrelevant_count: summary.irrelevant_count,
+          groups: summary.groups || [],
+          file: path.relative(__dirname, analysisPath),
+          completed_at: summary.completed_at || "",
+        });
+      });
+      sendJson(res, 200, {
+        records: analysisRecords,
+        analysed_records: analysisRecords.length,
+        total_history: historyRecords.length,
+      });
+      logLine(`GET /api/analysis-insights -> ${analysisRecords.length} records`);
+    } catch (err) {
+      sendJson(res, 500, { error: err.message || "Failed to load insights." });
+      logLine(`GET /api/analysis-insights error: ${err.message}`);
+    }
+    return;
+  }
+
   if (req.method === "GET") {
     serveStatic(req, res);
     return;
@@ -1385,6 +1775,101 @@ const server = http.createServer(async (req, res) => {
     } catch (err) {
       sendJson(res, 500, { error: err.message || "Server error." });
       logLine(`POST /api/ask error: ${err.message}`);
+    }
+    return;
+  }
+
+  if (req.method === "POST" && req.url.startsWith("/api/embed")) {
+    try {
+      const payload = await parseJsonBody(req);
+      const text =
+        String(payload.text || payload.query || payload.question || "").trim();
+      if (!text) {
+        sendJson(res, 400, { error: "text is required." });
+        return;
+      }
+      const requestedModel = payload.model ? String(payload.model).trim() : "";
+      const modelName = resolveModelName(requestedModel);
+      logLine(`POST /api/embed model=${modelName}`);
+      const embedding = await embedQuestion(text, modelName);
+      sendJson(res, 200, {
+        text,
+        model: modelName,
+        embedding,
+      });
+    } catch (err) {
+      sendJson(res, 500, { error: err.message || "Server error." });
+      logLine(`POST /api/embed error: ${err.message}`);
+    }
+    return;
+  }
+
+  if (req.method === "POST" && req.url.startsWith("/api/compare-embeddings")) {
+    try {
+      const payload = await parseJsonBody(req);
+      const question = String(payload.question || payload.text || "").trim();
+      if (!question) {
+        sendJson(res, 400, { error: "question is required." });
+        return;
+      }
+      const topK = Math.max(1, Number(payload.topK || 100));
+      const collectionName = payload.collection
+        ? String(payload.collection).trim()
+        : config.compareCollection;
+      const requestedModel = payload.model ? String(payload.model).trim() : "";
+      const modelName = resolveModelName(requestedModel);
+
+      logLine(
+        `POST /api/compare-embeddings model=${modelName} collection=${collectionName} topK=${topK}`
+      );
+
+      const [loraEmbedding, ollamaEmbedding] = await Promise.all([
+        embedQuestion(question, modelName),
+        embedWithOllama(question),
+      ]);
+
+      const [loraMatches, ollamaMatches] = await Promise.all([
+        queryQdrantByVector(loraEmbedding, topK, collectionName),
+        queryQdrantByVector(ollamaEmbedding, topK, collectionName),
+      ]);
+
+      const comparison = compareMatchSets(loraMatches, ollamaMatches);
+      const embeddingAnalysis = {
+        cosine_similarity: vectorCosine(loraEmbedding, ollamaEmbedding),
+        l2_distance: vectorL2(loraEmbedding, ollamaEmbedding),
+        l1_distance: vectorL1(loraEmbedding, ollamaEmbedding),
+        sum_abs_diff: vectorL1(loraEmbedding, ollamaEmbedding),
+        lora_stats: vectorStats(loraEmbedding),
+        ollama_stats: vectorStats(ollamaEmbedding),
+      };
+
+      sendJson(res, 200, {
+        question,
+        top_k: topK,
+        collection: collectionName,
+        lora: {
+          model: modelName,
+          matches: loraMatches,
+        },
+        ollama: {
+          model: config.ollamaEmbedModel,
+          matches: ollamaMatches,
+        },
+        overlap: comparison.overlap,
+        only_lora: comparison.only_lora,
+        only_ollama: comparison.only_ollama,
+        embedding_analysis: embeddingAnalysis,
+        stats: {
+          lora_count: loraMatches.length,
+          ollama_count: ollamaMatches.length,
+          overlap_count: comparison.overlap.length,
+          only_lora_count: comparison.only_lora.length,
+          only_ollama_count: comparison.only_ollama.length,
+        },
+      });
+    } catch (err) {
+      sendJson(res, 500, { error: err.message || "Server error." });
+      logLine(`POST /api/compare-embeddings error: ${err.message}`);
     }
     return;
   }

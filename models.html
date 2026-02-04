@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Model Comparison</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="models-page">
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-title">Model Comparison</div>
+          <div class="brand-sub">LoRA vs Ollama embeddings on hybrid_with_circular_name_lora</div>
+        </div>
+        <nav class="nav-links">
+          <a class="nav-link" href="/">Search</a>
+          <a class="nav-link" href="/history.html">History</a>
+          <a class="nav-link" href="/analyse.html">Analyse</a>
+          <a class="nav-link" href="/insights.html">Insights</a>
+          <a class="nav-link" href="/compare.html">Compare</a>
+          <a class="nav-link active" href="/models.html">Models</a>
+        </nav>
+        <div class="status" id="modelsStatus">Idle</div>
+      </header>
+
+      <main class="models-layout">
+        <section class="panel models-input">
+          <div class="panel-title">Compare Embeddings</div>
+          <div class="panel-sub">
+            Same question, two embedding pipelines. Review overlap, divergence, and full ranked lists.
+          </div>
+          <textarea
+            id="modelsQuestionInput"
+            placeholder="Enter a question for embedding comparison..."
+            rows="4"
+          ></textarea>
+          <div class="models-actions">
+            <button class="btn primary" id="modelsCompare">Run Comparison (Top K = 100)</button>
+            <button class="btn ghost" id="modelsClear">Clear</button>
+          </div>
+          <div class="models-metrics">
+            <div class="metric-card">
+              <div class="metric-label">Collection</div>
+              <div class="metric-value" id="modelsCollection">hybrid_with_circular_name_lora</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Top K</div>
+              <div class="metric-value" id="modelsTopK">100</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Overlap</div>
+              <div class="metric-value" id="modelsOverlapCount">-</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Only LoRA</div>
+              <div class="metric-value" id="modelsOnlyLoraCount">-</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Only Ollama</div>
+              <div class="metric-value" id="modelsOnlyOllamaCount">-</div>
+            </div>
+          </div>
+          <div class="models-embedding-metrics">
+            <div class="models-metric-grid">
+              <div class="metric-card">
+                <div class="metric-label">Cosine</div>
+                <div class="metric-value" id="metricCosine">-</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-label">L2 Distance</div>
+                <div class="metric-value" id="metricL2">-</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-label">L1 Distance</div>
+                <div class="metric-value" id="metricL1">-</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-label">Sum |Δ|</div>
+                <div class="metric-value" id="metricSumAbs">-</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-label">LoRA Length</div>
+                <div class="metric-value" id="metricLoraLen">-</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-label">Ollama Length</div>
+                <div class="metric-value" id="metricOllamaLen">-</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-label">LoRA Mean</div>
+                <div class="metric-value" id="metricLoraMean">-</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-label">Ollama Mean</div>
+                <div class="metric-value" id="metricOllamaMean">-</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel models-overview">
+          <div class="panel-title">Deltas</div>
+          <div class="panel-sub">High-level differences across the two result sets.</div>
+          <div class="models-cards">
+            <div class="compare-card">
+              <div class="compare-card-title">Overlap</div>
+              <div class="compare-card-sub">Action points present in both lists.</div>
+              <div class="compare-table" id="modelsOverlap"></div>
+            </div>
+            <div class="compare-card">
+              <div class="compare-card-title">Only LoRA</div>
+              <div class="compare-card-sub">Unique to LoRA results.</div>
+              <div class="compare-table" id="modelsOnlyLora"></div>
+            </div>
+            <div class="compare-card">
+              <div class="compare-card-title">Only Ollama</div>
+              <div class="compare-card-sub">Unique to Ollama results.</div>
+              <div class="compare-table" id="modelsOnlyOllama"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel models-full">
+          <div class="panel-title">Full Lists</div>
+          <div class="panel-sub">All action points returned for each embedding.</div>
+          <div class="models-full-grid">
+            <div class="compare-card">
+              <div class="compare-card-title">LoRA Full List</div>
+              <div class="compare-table" id="modelsFullLora"></div>
+            </div>
+            <div class="compare-card">
+              <div class="compare-card-title">Ollama Full List</div>
+              <div class="compare-table" id="modelsFullOllama"></div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="loading-overlay" id="modelsLoadingOverlay" aria-hidden="true">
+      <div class="loading-card" role="status" aria-live="polite">
+        <div class="loading-spinner" aria-hidden="true"></div>
+        <div class="loading-title" id="modelsLoadingTitle">Comparing embeddings</div>
+        <div class="loading-sub" id="modelsLoadingSub">
+          Querying Qdrant and computing differences.
+        </div>
+      </div>
+    </div>
+
+    <script src="models.js" defer></script>
+  </body>
+</html>

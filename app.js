@@ -47,12 +47,25 @@ const elements = {
   historyQuery: document.getElementById("historyQuery"),
   historyAnswer: document.getElementById("historyAnswer"),
   historyRaw: document.getElementById("historyRaw"),
+  compareQuestionInput: document.getElementById("compareQuestionInput"),
+  compareButton: document.getElementById("compareButton"),
+  compareClear: document.getElementById("compareClear"),
+  compareStatus: document.getElementById("compareStatus"),
+  compareSummary: document.getElementById("compareSummary"),
+  compareEmbeddingSummary: document.getElementById("compareEmbeddingSummary"),
+  compareOverlap: document.getElementById("compareOverlap"),
+  compareOnlyLora: document.getElementById("compareOnlyLora"),
+  compareOnlyOllama: document.getElementById("compareOnlyOllama"),
+  compareFullLora: document.getElementById("compareFullLora"),
+  compareFullOllama: document.getElementById("compareFullOllama"),
 };
 
 const DEFAULT_TOP_K = 300;
 const DEFAULT_THRESHOLD = 0.2;
 const DEFAULT_SEARCH_MODE = "dense";
 const DEFAULT_HISTORY_LIMIT = 200;
+const COMPARE_TOP_K = 100;
+const COMPARE_COLLECTION = "hybrid_with_circular_name_lora";
 const ROW_HEIGHT = 86;
 
 const state = {
@@ -72,6 +85,7 @@ const state = {
   isLoading: false,
   history: [],
   selectedHistoryIndex: null,
+  compareResult: null,
 };
 
 class VirtualList {
@@ -247,6 +261,178 @@ function inlineFormat(text) {
     return `<code>${code}</code>`;
   });
   return formatted;
+}
+
+function renderCompareTable(container, rows, columns) {
+  if (!container) {
+    return;
+  }
+  if (!rows || !rows.length) {
+    container.innerHTML = '<div class="compare-empty">No data.</div>';
+    return;
+  }
+  const thead = columns
+    .map((col) => `<th>${escapeHtml(col.label)}</th>`)
+    .join("");
+  const tbody = rows
+    .map((row) => {
+      const cells = columns
+        .map((col) => {
+          const raw = row[col.key];
+          const value =
+            raw === null || raw === undefined
+              ? ""
+              : typeof raw === "number"
+                ? String(raw)
+                : String(raw);
+          return `<td>${inlineFormat(escapeHtml(value))}</td>`;
+        })
+        .join("");
+      return `<tr>${cells}</tr>`;
+    })
+    .join("");
+  container.innerHTML = `<table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table>`;
+}
+
+function renderCompareSummary(payload) {
+  if (!elements.compareSummary) {
+    return;
+  }
+  if (!payload) {
+    elements.compareSummary.textContent = "";
+    if (elements.compareEmbeddingSummary) {
+      elements.compareEmbeddingSummary.textContent = "";
+    }
+    return;
+  }
+  const stats = payload.stats || {};
+  const summary = [
+    `Collection: ${payload.collection || "-"}`,
+    `Top K: ${payload.top_k || COMPARE_TOP_K}`,
+    `LoRA count: ${stats.lora_count ?? 0}`,
+    `Ollama count: ${stats.ollama_count ?? 0}`,
+    `Overlap: ${stats.overlap_count ?? 0}`,
+    `Only LoRA: ${stats.only_lora_count ?? 0}`,
+    `Only Ollama: ${stats.only_ollama_count ?? 0}`,
+  ];
+  elements.compareSummary.textContent = summary.join(" | ");
+
+  if (elements.compareEmbeddingSummary) {
+    const emb = payload.embedding_analysis || {};
+    const loraStats = emb.lora_stats || {};
+    const ollamaStats = emb.ollama_stats || {};
+    const embSummary = [
+      `Embedding cosine: ${Number(emb.cosine_similarity || 0).toFixed(6)}`,
+      `L2: ${Number(emb.l2_distance || 0).toFixed(6)}`,
+      `L1: ${Number(emb.l1_distance || 0).toFixed(6)}`,
+      `LoRA len: ${loraStats.length || "-"}`,
+      `Ollama len: ${ollamaStats.length || "-"}`,
+      `LoRA mean: ${Number(loraStats.mean || 0).toFixed(6)}`,
+      `Ollama mean: ${Number(ollamaStats.mean || 0).toFixed(6)}`,
+    ];
+    elements.compareEmbeddingSummary.textContent = embSummary.join(" | ");
+  }
+}
+
+function renderCompareResults(payload) {
+  state.compareResult = payload;
+  renderCompareSummary(payload);
+
+  renderCompareTable(elements.compareOverlap, payload.overlap || [], [
+    { key: "lora_rank", label: "LoRA Rank" },
+    { key: "ollama_rank", label: "Ollama Rank" },
+    { key: "action_id", label: "Action Id" },
+    { key: "circular_name", label: "Circular" },
+    { key: "action_point", label: "Action Point" },
+  ]);
+
+  renderCompareTable(elements.compareOnlyLora, payload.only_lora || [], [
+    { key: "lora_rank", label: "LoRA Rank" },
+    { key: "action_id", label: "Action Id" },
+    { key: "circular_name", label: "Circular" },
+    { key: "action_point", label: "Action Point" },
+  ]);
+
+  renderCompareTable(elements.compareOnlyOllama, payload.only_ollama || [], [
+    { key: "ollama_rank", label: "Ollama Rank" },
+    { key: "action_id", label: "Action Id" },
+    { key: "circular_name", label: "Circular" },
+    { key: "action_point", label: "Action Point" },
+  ]);
+
+  renderCompareTable(
+    elements.compareFullLora,
+    ((payload.lora && payload.lora.matches) || []).map((item, index) => ({
+      rank: index + 1,
+      ...item,
+    })),
+    [
+      { key: "rank", label: "Rank" },
+      { key: "score", label: "Score" },
+      { key: "action_id", label: "Action Id" },
+      { key: "circular_name", label: "Circular" },
+      { key: "action_point", label: "Action Point" },
+    ]
+  );
+
+  renderCompareTable(
+    elements.compareFullOllama,
+    ((payload.ollama && payload.ollama.matches) || []).map((item, index) => ({
+      rank: index + 1,
+      ...item,
+    })),
+    [
+      { key: "rank", label: "Rank" },
+      { key: "score", label: "Score" },
+      { key: "action_id", label: "Action Id" },
+      { key: "circular_name", label: "Circular" },
+      { key: "action_point", label: "Action Point" },
+    ]
+  );
+}
+
+async function compareEmbeddings() {
+  const question = elements.compareQuestionInput.value.trim();
+  if (!question) {
+    if (elements.compareStatus) {
+      elements.compareStatus.textContent = "Enter a question to compare.";
+    }
+    return;
+  }
+  if (elements.compareStatus) {
+    elements.compareStatus.textContent = "Comparing embeddings...";
+  }
+  addLog(`Compare: collection=${COMPARE_COLLECTION} topK=${COMPARE_TOP_K}`);
+  try {
+    const response = await fetch("/api/compare-embeddings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        question,
+        topK: COMPARE_TOP_K,
+        collection: COMPARE_COLLECTION,
+      }),
+    });
+    const rawText = await response.text();
+    let payload = null;
+    try {
+      payload = rawText ? JSON.parse(rawText) : {};
+    } catch (parseErr) {
+      throw new Error("Compare endpoint did not return JSON. Is the server updated?");
+    }
+    if (!response.ok) {
+      throw new Error((payload && payload.error) || "Compare failed.");
+    }
+    renderCompareResults(payload);
+    if (elements.compareStatus) {
+      elements.compareStatus.textContent = "Comparison ready.";
+    }
+  } catch (err) {
+    if (elements.compareStatus) {
+      elements.compareStatus.textContent = err.message || "Compare failed.";
+    }
+    addLog(`Compare error: ${err.message || "request failed"}`);
+  }
 }
 
 function parseTableRow(line) {
@@ -985,6 +1171,28 @@ function init() {
     elements.logView.textContent = "";
     addLog("Logs cleared.");
   });
+
+  if (elements.compareButton) {
+    elements.compareButton.addEventListener("click", () => compareEmbeddings());
+  }
+  if (elements.compareClear) {
+    elements.compareClear.addEventListener("click", () => {
+      if (elements.compareQuestionInput) {
+        elements.compareQuestionInput.value = "";
+      }
+      if (elements.compareStatus) {
+        elements.compareStatus.textContent = "Idle";
+      }
+      renderCompareResults({
+        overlap: [],
+        only_lora: [],
+        only_ollama: [],
+        lora: { matches: [] },
+        ollama: { matches: [] },
+        stats: {},
+      });
+    });
+  }
 
   updateRefineButtonState();
 }
